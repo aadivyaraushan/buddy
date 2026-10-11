@@ -357,7 +357,7 @@ final class Model: ObservableObject {
         if b.kind == .event && (b.tone == .upset || b.tone == .waiting) { shake += 1 }
         if b.tone == .happy { celebrate += 1 }
         onExpandChange?()
-        armTimer(b, seconds: seconds, pose: pose)
+        armTimer(b, seconds: seconds * linger(b.kind), pose: pose)
     }
 
     private func armTimer(_ b: Bubble, seconds: Double, pose: Pose) {
@@ -788,10 +788,12 @@ extension Model {
     }
     var unreadNotices: Int { notices.filter { $0.at > noticesSeenAt }.count }
 
-    /// A sticky bubble goes once its reason is gone: the session stopped waiting, or the PR stopped being red.
+    /// A sticky bubble goes once its reason is gone: the session stopped waiting, the PR stopped being red,
+    /// or something ran `buddy done KEY` for a `buddy say --sticky KEY`.
     func resolveSticky() {
         let waitingIds = Set(waiting.map { "s:\($0.id)" }), redIds = Set(needsYouPRs.map { "pr:\($0.id)" })
-        let live = { (k: String) in k.hasPrefix("s:") ? waitingIds.contains(k) : redIds.contains(k) }
+        let done = Set(((try? FileManager.default.contentsOfDirectory(atPath: doneDir)) ?? []).map { "say:" + $0 })
+        let live = { (k: String) in stickyLive(k, waiting: waitingIds, red: redIds, done: done) }
         waitingToSay.removeAll { $0.b.sticky.map { !live($0) } ?? false }
         if let k = bubble?.sticky, !live(k) { bubble = nil; pose = .none; onExpandChange?() }
     }
@@ -804,3 +806,13 @@ func keepGood(_ new: Stats, old: Stats, okMe: Bool, okTeam: Bool) -> Stats {
     if !okTeam { s.team = old.team; s.teamTotal = old.teamTotal }
     return s
 }
+
+/// Is the reason for a sticky bubble still there?
+func stickyLive(_ k: String, waiting: Set<String>, red: Set<String>, done: Set<String>) -> Bool {
+    if k.hasPrefix("say:") { return !done.contains(k) }
+    return k.hasPrefix("s:") ? waiting.contains(k) : red.contains(k)
+}
+
+/// How much longer than its own duration a bubble stays: events (done, a message for you) twice as long, chatter half again.
+// ponytail: one fixed factor per kind; a setting if anyone wants it shorter
+func linger(_ k: BubbleKind) -> Double { k == .event ? 2 : 1.5 }
