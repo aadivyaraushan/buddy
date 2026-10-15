@@ -50,7 +50,9 @@ final class Model: ObservableObject {
     @Published var facingLeft = true
     @Published var leftSide = false
     @Published var cardHeight: CGFloat = 0   // the card's full height, so the window can fit all of it
-    @Published var tight = false   // the card would overflow the screen: drop the quote first, never scroll
+    /// The card would overflow the screen, so it drops blocks, least useful first: 1 usage rings, 2 team, 3 quote, 4 stats tiles.
+    /// Sessions, the inbox and anything waiting for you always stay; the card never scrolls.
+    @Published var tight = 0
     @Published var cardWidth: CGFloat = { let w = UserDefaults.standard.double(forKey: "bit.cardWidth"); return w >= 300 ? w : 330 }() {
         didSet { UserDefaults.standard.set(Double(cardWidth), forKey: "bit.cardWidth") }
     }
@@ -258,7 +260,7 @@ final class Model: ObservableObject {
 
     /// Ignore a session (✕ on an alert row, or right-click any row): hidden until it's forgotten (12 h quiet), even if it keeps posting.
     func ignore(_ s: Session) {
-        var ig = ignored.filter { Date().timeIntervalSince1970 - $0.value < forgetAfter }
+        var ig = ignored.filter { Date().timeIntervalSince1970 - $0.value < hideFor }
         ig[s.id] = Date().timeIntervalSince1970
         UserDefaults.standard.set(ig, forKey: "bit.ignored")
         loadSessions()
@@ -612,7 +614,7 @@ final class Model: ObservableObject {
             guard let data = fm.contents(atPath: p), let s = try? JSONDecoder().decode(Session.self, from: data) else { continue }
             if now - s.ts > forgetAfter { try? fm.removeItem(atPath: p); continue }
             if let c = s.cwd, !c.isEmpty, !fm.fileExists(atPath: c) { try? fm.removeItem(atPath: p); continue }   // its folder is gone (a deleted worktree): it can never finish
-            if ig[s.id] != nil { continue }
+            if let at = ig[s.id], now - at < hideFor { continue }   // ✕ or "Ignore": out of sight for 24 hours, whatever it does
             if isStuck(s), s.id.hasPrefix("codex-"), codexArchived(String(s.id.dropFirst(6))) { try? fm.removeItem(atPath: p); continue }   // archived mid-turn: no Stop ever comes
             out.append(s)
         }

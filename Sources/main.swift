@@ -133,11 +133,11 @@ if let i = CommandLine.arguments.firstIndex(of: "--snapshot"), i + 1 < CommandLi
             try? png.write(to: URL(fileURLWithPath: "\(dir)/\(th)-\(tab).png"))
         }
     } } }
-    // a busy day (25 finished sessions) must not crowd the quote off the card: the done list stays a few lines tall
+    // a busy day (25 finished sessions, 10 names) stays 10 short rows: repeats fold, so the card keeps its shape
     var crowdFailed = false
     MainActor.assumeIsolated {
         let base = m.sessions
-        let crowd = (0..<25).map { i in Session(id: "done\(i)", cwd: "/x/r\(i % 10)", repo: "repo-\(i % 10)", branch: "main", state: "finished", activity: "", prompt: "p", ts: now - Double(600 + i * 60)) }
+        let crowd = (0..<25).map { i in Session(id: "done\(i)", cwd: "/x/r\(i % 10)", repo: "repo-\(i % 10)", branch: "main", state: "finished", activity: "", prompt: "p", ts: now - Double(600 + i * 60), source: i % 10 < 3 ? "codex-cli" : nil) }
         m.tab = "work"
         for th in ["burrow", "glass", "ink"] {
             T = themes[th]!; m.themeName = th
@@ -146,7 +146,14 @@ if let i = CommandLine.arguments.firstIndex(of: "--snapshot"), i + 1 < CommandLi
             m.sessions = base + crowd; let h1 = height()
             let r = ImageRenderer(content: Card(m: m).fixedSize(horizontal: false, vertical: true).environment(\.colorScheme, .light)); r.scale = 2
             if let t = r.nsImage?.tiffRepresentation, let png = NSBitmapImageRep(data: t)?.representation(using: .png, properties: [:]) { try? png.write(to: URL(fileURLWithPath: "\(dir)/\(th)-busy.png")) }
-            if h1 - h0 > 90 { print("DONE LIST TOO TALL in \(th): 25 finished sessions add \(Int(h1 - h0)) pt, and the quote would be dropped"); crowdFailed = true }
+            // too little room: the card drops usage, team, quote and tiles (never sessions) instead of scrolling
+            m.tight = 4; let h4 = height()
+            let r4 = ImageRenderer(content: Card(m: m).fixedSize(horizontal: false, vertical: true).environment(\.colorScheme, .light)); r4.scale = 2
+            if let t = r4.nsImage?.tiffRepresentation, let png = NSBitmapImageRep(data: t)?.representation(using: .png, properties: [:]) { try? png.write(to: URL(fileURLWithPath: "\(dir)/\(th)-squeezed.png")) }
+            print("\(th): busy card \(Int(h1)) pt, squeezed \(Int(h4)) pt")
+            m.tight = 0
+            if h1 - h4 < 250 { print("SQUEEZED CARD STILL TOO TALL in \(th): dropping blocks saves only \(Int(h1 - h4)) pt"); crowdFailed = true }
+            if h1 - h0 > 240 { print("DONE LIST TOO TALL in \(th): 25 finished sessions in 10 names add \(Int(h1 - h0)) pt; repeats must fold into one row"); crowdFailed = true }
         }
         m.sessions = base
     }

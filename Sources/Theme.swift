@@ -31,26 +31,35 @@ var T = themes[UserDefaults.standard.string(forKey: "bit.theme") ?? (config["the
 
 let listCap = 3   // rows per list before "+ N more", so the card never scrolls
 
-/// Finished sessions as chips that wrap, one per repo ("linkedin_agent ×14"): every one is listed, yet 25 of them take two or three lines,
-/// so the card keeps its quote. Click opens the newest in that repo; right-click ignores them all.
+/// Finished sessions as a short list, one row per name ("sbet ×7 · done 3m"): every one is listed, repeats fold into one row,
+/// so a busy day stays a few lines. The mark says Claude or Codex. Click opens the newest; ✕ hides the row for 24 hours.
 struct DoneChips: View {
     let m: Model; let pots: [Pot]; var fg: Color = .primary; var sub: Color = .secondary
     var body: some View {
         let done = pots.filter(\.done)
-        let groups = Dictionary(grouping: done) { $0.s.repo ?? "?" }
-        let order = done.map { $0.s.repo ?? "?" }.reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
-        if !done.isEmpty {
-            Flow(spacing: 4) {
-                Image(systemName: "checkmark").font(.system(size: 9, weight: .bold)).foregroundColor(sub).frame(height: 20)
-                ForEach(order, id: \.self) { repo in
-                    let g = groups[repo]!
+        // one row per name and agent: a Claude and a Codex session in the same folder stay apart
+        let key = { (p: Pot) in "\(p.s.agent.name) \(p.s.repo ?? "?")" }
+        let groups = Dictionary(grouping: done, by: key)
+        let order = done.map(key).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+        VStack(spacing: 0) {
+            ForEach(order, id: \.self) { k in
+                let g = groups[k]!, a = g[0].s.agent
+                HStack(spacing: 0) {
                     Button { activate(g[0].s) } label: {
-                        HStack(spacing: 3) {
-                            Text(repo).font(.system(size: 12, weight: .medium)).foregroundColor(fg).lineLimit(1)
+                        HStack(spacing: 6) {
+                            RoundedRectangle(cornerRadius: 4).fill(LinearGradient(colors: a.gradient, startPoint: .topLeading, endPoint: .bottomTrailing))
+                                .frame(width: 16, height: 16)
+                                .overlay(Text(a.glyph).font(.system(size: a.glyph.count > 1 ? 7 : 9, weight: .bold, design: .monospaced)).foregroundColor(.white))
+                                .help(a.label)
+                            Text(g[0].s.repo ?? "?").font(.system(size: 12, weight: .medium)).foregroundColor(fg).lineLimit(1)
                             if g.count > 1 { Text("×\(g.count)").font(.system(size: 11)).monospacedDigit().foregroundColor(sub) }
-                        }.padding(.horizontal, 7).frame(height: 20).background(Capsule().fill(sub.opacity(0.12))).contentShape(Capsule())
-                    }.buttonStyle(.plain).help("done \(g[0].age)")
-                    .contextMenu { Button(g.count > 1 ? "Ignore these \(g.count) sessions" : "Ignore this session") { g.forEach { m.ignore($0.s) } } }
+                            Spacer(minLength: 4)
+                            Text("done \(g[0].age)").font(.system(size: 11)).monospacedDigit().foregroundColor(sub)
+                        }.padding(.leading, 6).padding(.vertical, 2).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                    Button { g.forEach { m.ignore($0.s) } } label: {
+                        Text("✕").font(.system(size: 10, weight: .bold)).foregroundColor(sub).padding(.horizontal, 7).frame(maxHeight: .infinity).contentShape(Rectangle())
+                    }.buttonStyle(.plain).help(g.count > 1 ? "Hide these \(g.count) for 24 hours" : "Hide for 24 hours")
                 }
             }
         }
@@ -243,7 +252,7 @@ struct Carousel: View {
 
     var body: some View {
         let items = m.history
-        if !m.tight, let b = items.isEmpty ? nil : items[min(index, items.count - 1)] {
+        if m.tight < 3, let b = items.isEmpty ? nil : items[min(index, items.count - 1)] {
             let quote = b.kind == .quote
             let (ink, sub, accent): (Color, Color, Color) = T.name == "burrow" ? (bInk, bSub, bClay) : T.name == "glass" ? (gInk, gSub, gBlue) : (kInk, kSub, kIndigo)
             VStack(alignment: .leading, spacing: 7) {
