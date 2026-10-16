@@ -67,8 +67,17 @@ struct DoneChips: View {
                 }
             }
             if order.count > doneCap {
-                Button(showAll ? "show less" : "+ \(order.count - doneCap) more") { withAnimation { showAll.toggle() } }
-                    .buttonStyle(.plain).font(.system(size: 11)).foregroundColor(sub).padding(.leading, 6).padding(.vertical, 2)
+                HStack(spacing: 0) {
+                    Button(showAll ? "show less" : "+ \(order.count - doneCap) more") { withAnimation { showAll.toggle() } }
+                        .buttonStyle(.plain).font(.system(size: 11)).foregroundColor(sub).padding(.leading, 6).padding(.vertical, 2)
+                    Spacer(minLength: 4)
+                    if !showAll {   // the folded rows have no ✕ of their own while folded: hide them all at once
+                        let rest = order.dropFirst(doneCap).flatMap { groups[$0]! }
+                        Button { rest.forEach { m.ignore($0.s) } } label: {
+                            Text("✕").font(.system(size: 10, weight: .bold)).foregroundColor(sub).padding(.horizontal, 7).frame(maxHeight: .infinity).contentShape(Rectangle())
+                        }.buttonStyle(.plain).help("Hide these \(rest.count) for 24 hours")
+                    }
+                }
             }
         }
     }
@@ -160,7 +169,7 @@ struct PRBlock: View {
             if let why = d?.why {
                 label("WHAT BROKE", why, lines: 3, color: Color(red: 1, green: 0.62, blue: 0.62))
             } else {
-                label("WHAT BROKE", d == nil ? "reading the CI log…" : "✕ " + pr.failing.joined(separator: " · ✕ "), lines: 2, color: Color(red: 1, green: 0.62, blue: 0.62))
+                label("WHAT BROKE", d == nil ? "reading the CI log…" : pr.failing.isEmpty ? "a check failed: Open PR shows which" : "✕ " + pr.failing.joined(separator: " · ✕ "), lines: 2, color: Color(red: 1, green: 0.62, blue: 0.62))
             }
             if let s = d?.session {
                 Text("Last worked on in \(s.codex ? "Codex · " : "")\((s.cwd as NSString).lastPathComponent) · \(ago(Date().timeIntervalSince(s.when))) ago")
