@@ -61,11 +61,13 @@ final class Model: ObservableObject {
     @Published var facingLeft = true
     @Published var leftSide = false
     @Published var cardHeight: CGFloat = 0   // the card's full height, so the window can fit all of it
-    @Published var cardOverlap: CGFloat = 0  // too little room above Buddy: the open card covers the pet by this much instead of being cut off
+    @Published var cardBeside = false        // too little room above Buddy: the card opens beside it (Window.cardPlacement)
+    @Published var cardOnLeft = false        // …on the pet's left (else its right)
+    @Published var petLift: CGFloat = 0     // …and the window reaches below the pet by this much, so the pet is lifted back to its spot
     @Published var cardWidth: CGFloat = { let w = UserDefaults.standard.double(forKey: "bit.cardWidth"); return w >= 300 ? w : 330 }() {
         didSet { UserDefaults.standard.set(Double(cardWidth), forKey: "bit.cardWidth") }
     }
-    var gripFrom: (mouse: CGFloat, width: CGFloat)?   // drag-to-resize start
+    var gripFrom: (mouse: CGFloat, width: CGFloat, sign: CGFloat)?   // drag-to-resize start
     @Published var stats = Stats()
     @Published var statsLoaded = false
     @Published var pose: Pose = .none
@@ -282,7 +284,16 @@ final class Model: ObservableObject {
     var working: [Session] { sessions.filter { $0.state == "working" && !isStuck($0) } }
     /// Finished in the last hour: the ball is in your court.
     var yourTurn: [Session] { sessions.filter { $0.state == "finished" && Date().timeIntervalSince1970 - $0.ts < 3600 } }
-    var needsYouPRs: [PR] { prs.filter(\.needsYou) }
+    var needsYouPRs: [PR] { prs.filter { $0.needsYou && hiddenPRs[$0.id] != $0.sha } }
+    /// Red PRs you hid with ✕ on their card: out of the way until the next push (a new commit that is still red comes back).
+    var hiddenRed: [PR] { prs.filter { $0.needsYou && hiddenPRs[$0.id] == $0.sha } }
+    var hiddenPRs: [String: String] { UserDefaults.standard.dictionary(forKey: "bit.hiddenPRs") as? [String: String] ?? [:] }
+    func hidePR(_ pr: PR) {
+        var h = hiddenPRs.filter { id, _ in prs.contains { $0.id == id } }   // forget PRs that closed
+        h[pr.id] = pr.sha
+        UserDefaults.standard.set(h, forKey: "bit.hiddenPRs")
+        objectWillChange.send(); resolveSticky(); onExpandChange?()   // its queued or shown alert goes too
+    }
     var draftRed: [PR] { prs.filter { $0.ci == "red" && $0.isDraft && $0.recent } }
     var staleRed: [PR] { prs.filter { $0.ci == "red" && !$0.recent } }
     var badge: Int { waiting.count + stuck.count + needsYouPRs.count }
@@ -700,7 +711,7 @@ final class Model: ObservableObject {
         for pr in new where pr.recent {
             let prev = lastCI[pr.id]
             if !first, prev != pr.ci {
-                if pr.needsYou {
+                if pr.needsYou && hiddenPRs[pr.id] != pr.sha {   // hidden with ✕: quiet until its next push
                     say(line("red", "Oh no, \(pr.short) broke\nhover me to see why", ["pr": pr.short]), .upset, seconds: 30, sticky: "pr:\(pr.id)")
                 } else if pr.ci == "green", prev == "red" || prev == "pending" {
                     say("\(pr.short) is green ✨", .happy, seconds: 8) { NSWorkspace.shared.open(URL(string: pr.url)!) }
@@ -714,7 +725,7 @@ final class Model: ObservableObject {
         enrich()
         if first {
             if let p = needsYouPRs.first {
-                say("\(p.short) needs a fix\nhover me to see why", .upset, seconds: 14)
+                say("\(p.short) needs a fix\nhover me to see why", .upset, seconds: 14, sticky: "pr:\(p.id)")   // sticky: goes when the PR is fixed or hidden
             } else if mergedToday > 0 {
                 say("Hi! \(mergedToday) merged today 🏆", .happy, seconds: 8)
             }

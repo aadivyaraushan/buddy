@@ -92,6 +92,16 @@ if CommandLine.arguments.contains("--selftest") {   // the date and time parsing
             precondition(r.x == scr.maxX - sz.width - 10 && l.x == scr.minX + 10)
             precondition(r.y >= scr.minY + 10 && r.y + sz.height + 360 <= scr.maxY)
         }
+        // the open card: above the pet when it fits, else beside it; on screen, never over the pet, the pet never moves
+        // (card height, card width, pet x): fits above, too tall on either edge, taller than the screen, and too wide for the near side
+        for (card, width, x) in [(500.0, 360.0, 1300.0), (800, 360, 1300), (800, 360, 20), (2000, 360, 1300), (800, 900, 700)] as [(CGFloat, CGFloat, CGFloat)] {
+            let pet = NSRect(x: x, y: 110, width: 100, height: 108), s = NSRect(x: 0, y: 0, width: 1512, height: 944)
+            let p = cardPlacement(card: card, cardWidth: width, pet: pet, leftSide: x < s.midX, in: s)
+            precondition(p.beside == (card > 600 && width < 700) && (width > 780 || s.contains(p.frame)), "card \(card)×\(width): \(p.frame) beside \(p.beside)")
+            let petIn = NSRect(x: p.cardOnLeft ? p.frame.maxX - 100 : p.frame.minX, y: p.frame.minY + p.lift, width: 100, height: 108)
+            precondition(!p.beside || petIn == pet, "the pet moved: \(petIn) vs \(pet)")
+            precondition(!p.beside || !p.card.intersects(pet), "card \(card) covers the pet")
+        }
         precondition(strollTarget(side: false, from: NSRect(x: 30, y: 40, width: 100, height: 108), in: scr, size: sz, roll: 1).y == 40)
     }
     // The "Merged!" bubble and the card disagreed (two counts); now the card's number is the only one.
