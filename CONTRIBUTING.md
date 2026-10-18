@@ -14,6 +14,7 @@ Thanks for helping! Buddy is small on purpose: a handful of Swift files, one Pyt
 | `Sources/Burrow.swift`, `Glass.swift`, `Ink.swift` | One card per theme |
 | `Sources/Window.swift` | The floating window, bubbles, and walking along the screen |
 | `Sources/Life.swift` | The Personal tab: profile, goals, to-dos and their nudges |
+| `Sources/Google.swift` | Google Tasks: sign-in (PKCE, loopback), Keychain, today's tasks. `GoogleSelftest.swift` checks its pure parts |
 | `Sources/Codex.swift`, `Disk.swift`, `Inbox.swift` | Codex sessions, disk and worktree watch, `buddy say` messages |
 | `Sources/Basics.swift` | Shared types, settings, and jumping to a session's window |
 | `Sources/main.swift` | Start-up and the test flags |

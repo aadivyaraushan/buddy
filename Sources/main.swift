@@ -114,6 +114,7 @@ if CommandLine.arguments.contains("--selftest") {   // the date and time parsing
     precondition(stickyLive("s:a", waiting: ["s:a"], red: [], done: []) && !stickyLive("pr:9", waiting: [], red: [], done: ["say:pr:9"]))
     // automated one-line PRs (gitlink bumps) and bots don't count on the leaderboard
     precondition(!countsPR(lines: 2, bot: false) && countsPR(lines: 3, bot: false) && !countsPR(lines: 500, bot: true))
+    googleSelftest()
     print("selftest ok"); exit(0)
 }
 var walkFailed = false
@@ -156,6 +157,7 @@ if let i = CommandLine.arguments.firstIndex(of: "--snapshot"), i + 1 < CommandLi
     m.tasks = [Todo(text: "Book the dentist", area: "home", due: Calendar.current.startOfDay(for: Date()), line: "- [ ] a"),
                Todo(text: "Reply to the design review", area: "work", line: "- [ ] b"),
                Todo(text: "Update CV", area: "career", line: "- [ ] c")]
+    m.google = googleSamples()
     m.history = [Bubble(text: "“Waste no more time arguing what a good man should be. Be one.”", tone: .calm, kind: .quote, byline: "— Marcus Aurelius")]
     m.breedIndex = 0; m.cardWidth = 360
     m.notices = [Bubble(text: "onboarding is done in 4m. Tap to open ✨", tone: .happy), Bubble(text: "pricing-page wants your OK", tone: .waiting)]
