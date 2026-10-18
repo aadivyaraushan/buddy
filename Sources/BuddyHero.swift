@@ -8,6 +8,7 @@ let heroBuddy = PetKind(
     name: "hero", emoji: "🦸", hello: "🦸", coats: heroSuits,
     tricks: [.stretch, .hop, .capeSwirl, .capeSwirl, .capeSwirl, .grapple, .zoomies],
     onRed: .flyOff, onMerge: .heroLanding, biped: true,
+    carried: Carried(land: ["💨", "💥", "💨"], landTime: 1.3, thud: true),
     sceneEars: { _, _, _ in })
 
 let heroSuits: [Breed] = [
@@ -22,7 +23,7 @@ extension Cat {
     func heroAvatar(_ p: AvatarPose) -> some View {
         let b = p.b, swing = p.step * 22, flutter = sin(p.s * (p.flying || p.step != 0 ? 14 : 3)) * (p.flying ? 3 : 1.5)
         let swirl = p.g == .capeSwirl && p.gt < 1.2 ? cos(p.gt / 1.2 * 2 * .pi) : 1
-        let landing = p.g == .heroLanding && p.gt > 0.5 && p.gt < 1.3   // fist on the ground
+        let landing = p.g == .heroLanding && p.gt > 0.5 && p.gt < 1.3 || p.landing && p.land < 0.8   // fist on the ground
         return ZStack {
             // cape, behind everything: from the shoulders, streaming back; flat out when flying
             Path { c in

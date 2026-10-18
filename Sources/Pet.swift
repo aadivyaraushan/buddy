@@ -59,6 +59,7 @@ struct PetKind {
     var chunky = false            // wider legs and body
     var biped = false             // an avatar on two legs, drawn whole by its own file (Avatars.swift)
     var bursts: [Gesture: [String]] = [:]   // its own words or emoji for a trick, instead of the usual ("ROAR!" → "HAI-YA!")
+    var carried = Carried()                 // what it says when picked up, and how it lands (Carry.swift)
     let sceneEars: (inout GraphicsContext, _ fur: Color, _ dark: Color) -> Void   // the pet in Burrow's scene
 }
 
@@ -153,10 +154,14 @@ struct Cat: View {
     var b: Breed { m.breed }
     var dark: Bool { b.name == "Tuxedo" || b.name == "Midnight" || b.name == "Black pug" || b.name == "Black bear" }
     var faceInk: Color { dark ? Color.white : ink }
-    var mood: Mood { m.squatting ? .asleep : (m.hovering && m.mood == .asleep && !m.snoozed ? .calm : m.mood) }
+    var mood: Mood {
+        if m.carry != .none { return m.mood == .asleep ? .calm : m.mood }   // picked up: awake, even from a nap
+        return m.squatting ? .asleep : (m.hovering && m.mood == .asleep && !m.snoozed ? .calm : m.mood)
+    }
+    var held: Bool { m.carry == .held || m.carry == .falling }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: m.walking || m.zoomies || m.gesture != .none || m.hovering || m.breathing ? 1 / walkHz : 1.0)) { t in   // 1 fps when idle: 7.6% → 3% CPU, measured
+        TimelineView(.animation(minimumInterval: m.walking || m.zoomies || m.gesture != .none || m.hovering || m.breathing || m.carry != .none ? 1 / walkHz : 1.0)) { t in   // 1 fps when idle: 7.6% → 3% CPU, measured
             let s = (frozenTime ?? t.date.timeIntervalSinceReferenceDate)
             let asleep = mood == .asleep
             let breathe = 1 + (asleep ? 0.05 : 0.025) * sin(s * (asleep ? 1.4 : 2.4))
@@ -166,7 +171,12 @@ struct Cat: View {
             let hm = wearing != nil || petKind.biped ? costumeMotion(g, gt) : (y: CGFloat(0), squash: CGFloat(1), tilt: 0.0)
             let step = m.walking && !gliding ? sin(s * 12) : 0
             let wagSpeed: Double = m.hovering ? 9 : mood == .busy ? 4 : mood == .upset ? 14 : 2
-            let wag = asleep ? 0 : sin(s * wagSpeed) * (m.hovering ? 16 : 9)
+            let ct = (frozenNow ?? Date()).timeIntervalSince(m.carryAt)   // seconds into the lift, fall or landing
+            let land = m.carry == .landed ? ct : -1
+            let kind = petKind.name
+            // held: the cat's tail sways slowly, the pug's wiggles, the bear's hardly moves
+            let wag = held ? sin(s * (kind == "pug" ? 20 : kind == "bear" ? 3 : 1.6)) * (kind == "pug" ? 10 : kind == "bear" ? 4 : 16)
+                : asleep ? 0 : sin(s * wagSpeed) * (m.hovering ? 16 : 9)
             let blink = !asleep && Int(s * 10) % 37 == 0
             let k = g == .stretch ? sin(min(gt / 2.4, 1) * .pi) : 0
             let loaf = g == .loaf
@@ -174,14 +184,17 @@ struct Cat: View {
                 breathingGuide(s: s).frame(width: 84, height: 72)   // outside the flip, so the words read the right way round
                 ZStack {
                   if petKind.biped {
-                    avatarBody(AvatarPose(b: b, s: s, step: m.walking ? sin(s * 12) : 0, asleep: asleep, blink: blink, g: g, gt: gt))
+                    avatarBody(AvatarPose(b: b, s: s, step: m.walking && !held ? sin(s * 12) : 0, asleep: asleep, blink: blink, g: g, gt: gt, held: held, land: land))
                     poseLayer.offset(x: -8, y: -7)
                   } else {
                     if hero { cape(s: s, moving: gliding, gt: gt) }
                     tail(wag: wag, asleep: asleep)
                     ForEach(0..<4) { i in
-                        let y = asleep ? 64 : 63 + (i % 2 == 0 ? step : -step) * 2
-                        Capsule().fill(drip ? ink : (b.points ?? (i % 2 == 0 ? b.dark : b.fur))).frame(width: petKind.chunky ? 10 : 7, height: asleep || loaf ? 4 : gliding ? 7 : 12)
+                        // held: the legs hang long; the pug paddles, the bear's spread out
+                        let paddle = held && kind == "pug" ? sin(s * 22 + Double(i) * 1.7) * 3 : 0
+                        let y = held ? 66 + paddle : asleep ? 64 : 63 + (i % 2 == 0 ? step : -step) * 2
+                        Capsule().fill(drip ? ink : (b.points ?? (i % 2 == 0 ? b.dark : b.fur))).frame(width: petKind.chunky ? 10 : 7, height: held ? 15 : asleep || loaf ? 4 : gliding ? 7 : 12)
+                            .rotationEffect(.degrees(held && kind == "bear" ? (i < 2 ? 24 : -24) : 0), anchor: .top)
                             .position(x: [22, 32, 46, 56][i], y: y)
                         if drip && !asleep && !loaf {   // sneakers
                             Capsule().fill(Color.white).frame(width: 9, height: 4.5).overlay(Capsule().fill(ink).frame(width: 4, height: 1.1))
@@ -229,7 +242,12 @@ struct Cat: View {
                 .scaleEffect(x: 1 / hm.squash * (hm.squash < 1 ? 0.9 : 1), y: hm.squash, anchor: .bottom)
                 .rotationEffect(.degrees(hm.tilt + (gliding && !flying ? 8 : 0)), anchor: .center)
                 .offset(y: hm.y + (gliding ? -10 + sin(s * 3) * 2 : 0) + (wearing == "durga" && m.walking ? pandalHop(s) : 0))
+                .modifier(Held(on: held && !petKind.biped, kind: kind, s: s))
+                .modifier(Landing(t: land, kind: kind, biped: petKind.biped))
+                .rotationEffect(.degrees(held && kind == "astronaut" ? s * 40 : 0))                                        // no gravity: a slow turn
+                .rotationEffect(.degrees(m.carry == .falling && kind == "ninja" ? min(ct / 0.18, 1) * 360 : 0))           // a ball: one flip in the short drop
                 .scaleEffect(x: m.facingLeft ? -1 : 1, y: 1)
+                .rotationEffect(.degrees(m.swing), anchor: swingAnchor)
                 accessory(s: s).frame(width: 84, height: 20).offset(y: -22)
                 if m.badge > 0 && !drawingForPhone {   // the phone draws its own, live badge; napping, just a quiet "!"
                     Text(m.snoozed ? "!" : "\(m.badge)").font(.system(size: 10, weight: .bold, design: .rounded)).foregroundColor(.white)
@@ -252,6 +270,17 @@ struct Cat: View {
         }
         .onChange(of: m.hearts) { _ in burst(["💖", "💗", "💖"]) }
         .onChange(of: m.leaves) { _ in burst([["🍃"], ["🌸"], ["🍃", "🍂"]].randomElement()!, fall: true) }
+        .onChange(of: m.carry) { c in
+            let k = petKind.carried
+            switch c {
+            case .held: if !k.lift.isEmpty { burst(k.lift) }
+            case .landed:
+                burst(k.land)
+                if k.thud { shakeSoon(after: 0) }
+                if let (at, words) = k.later { DispatchQueue.main.asyncAfter(deadline: .now() + at) { if m.carry == .landed { burst(words) } } }
+            default: break
+            }
+        }
         .onChange(of: m.gesture) { g in
             if let words = petKind.bursts[g] { burst(words); return }
             switch g {
@@ -297,7 +326,9 @@ struct Cat: View {
     }
 
     @ViewBuilder func eyes(blink: Bool, asleep: Bool, look: CGSize) -> some View {
-        if asleep || (m.hovering && mood == .calm) || m.gesture == .yawn || m.gesture == .wash {
+        let lick = m.carry == .landed && petKind.name == "cat" && (frozenNow ?? Date()).timeIntervalSince(m.carryAt) > 0.9
+        if asleep || (m.hovering && mood == .calm && m.carry == .none) || m.gesture == .yawn || m.gesture == .wash || lick
+            || (held && petKind.name == "cat") {   // a cat held by the scruff goes calm
             ForEach([53.0, 67.0], id: \.self) { x in
                 Circle().trim(from: asleep ? 0.05 : 0.55, to: asleep ? 0.45 : 0.95)
                     .stroke(faceInk.opacity(0.8), lineWidth: 1.8).frame(width: 8, height: 8).position(x: x, y: 31)
@@ -307,7 +338,7 @@ struct Cat: View {
                 Circle().trim(from: 0.55, to: 0.95).stroke(faceInk.opacity(0.85), lineWidth: 2.2).frame(width: 9, height: 9).position(x: x, y: 33)
             }
         } else {
-            let big = mood == .waiting || mood == .upset
+            let big = mood == .waiting || mood == .upset || held   // the pug and the bear: wide-eyed in the air
             ForEach([53.0, 67.0], id: \.self) { x in
                 ZStack {
                     Ellipse().fill(b.eye == ink ? ink : b.eye).overlay(Ellipse().fill(ink).frame(width: 3)).frame(width: big ? 9 : 7.5, height: blink ? 1.5 : (big ? 11 : 9))
@@ -340,9 +371,15 @@ struct Cat: View {
         }
     }
 
+    /// The swing turns round the grip, on screen (so it is mirrored when the pet faces left).
+    var swingAnchor: UnitPoint {
+        let g = gripPoint(biped: petKind.biped)
+        return UnitPoint(x: (m.facingLeft ? 84 - g.x : g.x) / 84, y: g.y / 72)
+    }
+
     /// The roar lands a beat after the bear rears up.
-    func shakeSoon() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+    func shakeSoon(after: Double = 0.5) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + after) {
             withAnimation(.easeInOut(duration: 0.05).repeatCount(9, autoreverses: true)) { wobble = 3 }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { wobble = 0 }
         }
@@ -363,5 +400,36 @@ struct Cat: View {
         let d = max(1, sqrt(dx * dx + dy * dy))
         let k = min(1, d / 200) * 2.5
         return CGSize(width: dx / d * k, height: -dy / d * k)
+    }
+}
+
+/// An animal held by the scruff: the body hangs and sags, head up. The cat goes limp, the pug wiggles, the heavy bear sags most.
+struct Held: ViewModifier {
+    let on: Bool, kind: String, s: Double
+    func body(content: Content) -> some View {
+        let sag = !on ? 1 : kind == "bear" ? 1.12 : kind == "pug" ? 1.04 : 1.08
+        let tilt = !on ? 0 : kind == "pug" ? -12 + sin(s * 14) * 5 : kind == "bear" ? -16 : -22
+        let g = gripPoint(biped: false)
+        content
+            .scaleEffect(x: on ? 0.96 : 1, y: sag, anchor: UnitPoint(x: g.x / 84, y: g.y / 72))
+            .rotationEffect(.degrees(tilt), anchor: UnitPoint(x: g.x / 84, y: g.y / 72))
+    }
+}
+
+/// Landing, `t` seconds after the impact (-1: not landing). A squash and a few bounces; then the cat shakes itself,
+/// the pug sneezes, the hero holds its crouch.
+struct Landing: ViewModifier {
+    let t: Double, kind: String, biped: Bool
+    func body(content: Content) -> some View {
+        let on = t >= 0
+        let depth = kind == "pug" ? 0.3 : kind == "bear" ? 0.25 : kind == "astronaut" ? 0.08 : kind == "hero" ? 0 : 0.18
+        let hero = kind == "hero" && on ? costumeMotion(.heroLanding, 0.5 + t) : (y: CGFloat(0), squash: CGFloat(1), tilt: 0.0)
+        let sq = on ? landSquash(t, depth) * hero.squash : 1
+        let shake = on && kind == "cat" && t > 0.4 && t < 0.85 ? sin(t * 40) * 5 : 0
+        let sneeze: CGFloat = on && kind == "pug" && t > 0.6 && t < 0.8 ? -8 : 0
+        content
+            .scaleEffect(x: 1 / sq.squareRoot(), y: sq, anchor: .bottom)
+            .rotationEffect(.degrees(shake + hero.tilt), anchor: .bottom)
+            .offset(y: sneeze)
     }
 }

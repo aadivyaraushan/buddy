@@ -7,6 +7,7 @@ let bearPet = PetKind(
     name: "bear", emoji: "🐻", hello: "🐻", coats: bearCoats,
     tricks: [.stretch, .yawn, .loaf, .sneeze, .zoomies, .hop, .roar, .roar, .honey, .fish, .scratch],
     onRed: .roar, onMerge: .fish, chunky: true,
+    carried: Carried(lift: ["hmph"], land: ["💨", "💥", "💨"], landTime: 1.0, thud: true),
     sceneEars: { c, fur, _ in
         c.fill(Path(ellipseIn: CGRect(x: 1, y: -31, width: 6, height: 6)), with: .color(fur))
         c.fill(Path(ellipseIn: CGRect(x: 11, y: -31, width: 6, height: 6)), with: .color(fur))

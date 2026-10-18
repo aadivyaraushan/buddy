@@ -11,6 +11,7 @@ let stitchBuddy = PetKind(
     tricks: [.shimmy, .hop, .hop, .stretch, .spin, .sneeze],
     onRed: .sneeze, onMerge: .shimmy, biped: true,
     bursts: [.shimmy: ["Aloha!", "🌺", "🎶"], .sneeze: ["Meega nala!", "👾"], .hop: ["🌊", "🏄"], .stretch: ["Ohana 💙"], .spin: ["wheee!"]],
+    carried: Carried(lift: ["eep!"], land: ["💨"], later: (0.5, ["again!"]), landTime: 1.2),   // ears out, arms up; loves being dropped
     sceneEars: { _, _, _ in })
 
 let stitchCoats: [Breed] = [
@@ -61,7 +62,7 @@ extension Cat {
         let hula = g == .shimmy && gt < 2.4
         let alien = g == .sneeze && gt > 0.15 && gt < 2.3             // extra arms, antennae and spines out
         let surf = g == .hop && gt < 2.4
-        let flap = g == .stretch ? sin(min(gt / 2.4, 1) * .pi) : 0      // ears spread wide
+        let flap = p.held ? 0.8 : g == .stretch ? sin(min(gt / 2.4, 1) * .pi) : 0      // ears spread wide (and while held)
         let happy = hula || surf || flap > 0.2
         let bob: CGFloat = -abs(CGFloat(st)) * 2
         let wave = sin(p.s * 3)
@@ -74,6 +75,7 @@ extension Cat {
         if hula { armB = 125; armF = 35 + sin(gt * 26) * 18 }         // back hand on the neck, front hand strumming
         else if surf { armB = -75 + wave * 8; armF = 80 - wave * 8 }   // out for balance
         else if alien { armB = -40 + sin(gt * 18) * 20; armF = 60 + sin(gt * 18 + 1) * 20 }
+        else if p.held { armB = -150 + wave * 12; armF = 150 - wave * 12 }   // held: both arms up, waving
         else if flap > 0 { armB = -50 * flap; armF = 70 * flap }
         let leg = surf ? 0 : st * 24
         let jitter: CGFloat = alien ? CGFloat(sin(gt * 60)) * 0.7 : 0

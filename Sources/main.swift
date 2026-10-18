@@ -114,6 +114,21 @@ if CommandLine.arguments.contains("--selftest") {   // the date and time parsing
     precondition(stickyLive("s:a", waiting: ["s:a"], red: [], done: []) && !stickyLive("pr:9", waiting: [], red: [], done: ["say:pr:9"]))
     // automated one-line PRs (gitlink bumps) and bots don't count on the leaderboard
     precondition(!countsPR(lines: 2, bot: false) && countsPR(lines: 3, bot: false) && !countsPR(lines: 500, bot: true))
+    var w = Swing(); for _ in 0..<9 { w = swingStep(w, vx: 1000, dt: 1.0 / 30) }; precondition(w.angle > 5)   // drag right: the body lags behind, to the left
+    for _ in 0..<300 { w = swingStep(w, vx: 5000, dt: 1.0 / 30) }; precondition(abs(w.angle) <= 40)            // a fast drag never swings it over the top
+    for _ in 0..<150 { w = swingStep(w, vx: 0, dt: 1.0 / 30) }; precondition(abs(w.angle) < 1 && abs(w.speed) < 5)   // hold still: it settles
+    var fy = 500.0, fv = 0.0, down = false, n = 0
+    while !down && n < 90 { (fy, fv, down) = fallStep(y: fy, vy: fv, floor: 40, dt: 1.0 / 30); n += 1 }
+    precondition(down && fy == 40 && n < 30)                                                   // 460 px to the floor in under a second, and it stops on it
+    precondition(fallStep(y: 10, vy: 0, floor: 40, dt: 1.0 / 30) == (40, 0, true))            // let go below the floor: put on it
+    precondition(landingY(from: 500, floor: 40) == 460 && landingY(from: 60, floor: 40) == 40 && landingY(from: 10, floor: 40) == 40)   // let go mid-air: a short drop where it is, never through the floor
+    let two = [CGRect(x: 0, y: 0, width: 1000, height: 800), CGRect(x: 1000, y: 200, width: 800, height: 600)]
+    precondition(floorBelow(CGPoint(x: 1200, y: 700), in: two) == two[1] && floorBelow(CGPoint(x: 300, y: 2000), in: two) == two[0] && floorBelow(CGPoint(x: 2500, y: 0), in: two) == two[1])
+    let c = Model(); c.showCard = true; c.walking = true; c.zoomies = true; c.doGesture(.spin)   // lifting stops everything else
+    c.lift(); precondition(c.carry == .held && !c.showCard && !c.walking && !c.zoomies && c.gesture == .none)
+    c.drop(); precondition(c.carry == .falling)
+    for k in pets { precondition(!k.carried.lift.isEmpty || k.carried.land != Carried().land, "\(k.name) has no lift or landing of its own") }   // a new buddy needs `carried:` too
+    c.land(); precondition(c.carry == .landed)
     print("selftest ok"); exit(0)
 }
 var walkFailed = false
@@ -255,6 +270,22 @@ if let i = CommandLine.arguments.firstIndex(of: "--snapshot"), i + 1 < CommandLi
             let r = ImageRenderer(content: row); r.scale = 2
             if let img = r.nsImage, let t = img.tiffRepresentation, let png = NSBitmapImageRep(data: t)?.representation(using: .png, properties: [:]) {
                 try? png.write(to: URL(fileURLWithPath: "\(dir)/moves-\(p).png"))
+            }
+        }
+        // every buddy picked up: held, swinging each way, falling, then its landing part-way through (Carry.swift)
+        let carries: [(Carry, Double, Double)] = [(.held, 0.5, 0), (.held, 0.5, 25), (.held, 0.5, -25), (.falling, 0.2, 0), (.landed, 0.03, 0), (.landed, 0.3, 0), (.landed, 0.7, 0), (.landed, 1.0, 0)]
+        for p in pets.map(\.name) {
+            costume = "off"; forcedPet = p
+            let models: [Model] = carries.map { (c, t, a) in
+                let pm = Model(); pm.breedIndex = 0; pm.sessions = [Session(id: "w", state: "working", ts: now)]
+                pm.carry = c; pm.carryAt = frozenNow!.addingTimeInterval(-t); pm.swing = a
+                return pm
+            }
+            let row = HStack(spacing: 6) { ForEach(models.indices, id: \.self) { i in Cat(m: models[i]).frame(width: 96, height: 84).padding(.vertical, 14) } }
+                .padding(8).background(Color.white).environment(\.colorScheme, .light)
+            let r = ImageRenderer(content: row); r.scale = 2
+            if let img = r.nsImage, let t = img.tiffRepresentation, let png = NSBitmapImageRep(data: t)?.representation(using: .png, properties: [:]) {
+                try? png.write(to: URL(fileURLWithPath: "\(dir)/carry-\(p).png"))
             }
         }
         // every buddy's walk: 6 frames across one step, so a walk that doesn't read shows up (a still frame can't show it)
