@@ -7,6 +7,7 @@ let pugPet = PetKind(
     name: "pug", emoji: "🐶", hello: "🐶", coats: pugCoats,
     tricks: [.stretch, .yawn, .spin, .wash, .loaf, .sneeze, .zoomies, .knock, .hop],
     outfit: true, dances: true,
+    carried: Carried(lift: ["!!"], later: (0.6, ["achoo!"]), landTime: 1.3),
     sceneEars: { c, _, dark in
         c.fill(Path(ellipseIn: CGRect(x: 0, y: -28, width: 5, height: 8)), with: .color(dark))
         c.fill(Path(ellipseIn: CGRect(x: 13, y: -28, width: 5, height: 8)), with: .color(dark))
@@ -59,7 +60,7 @@ extension Cat {
                 eyes(blink: blink, asleep: asleep, look: look)
             }
             Ellipse().fill(Color.black).frame(width: 9, height: 5).position(x: 60, y: 37)
-            if mood == .happy || m.hovering {
+            if mood == .happy || m.hovering || m.carry != .none {
                 Capsule().fill(Color(red: 0.95, green: 0.45, blue: 0.55)).frame(width: 5, height: 7).position(x: 61, y: 46)   // tongue out
             }
             mouth

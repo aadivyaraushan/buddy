@@ -9,6 +9,7 @@ let ninjaBuddy = PetKind(
     tricks: [.stretch, .spin, .spin, .zoomies, .hop, .knock, .knock, .grapple],
     onRed: .flyOff, onMerge: .hop, biped: true,
     bursts: [.spin: ["poof!"], .hop: ["HAI-YA!"], .zoomies: ["💨", "💨"], .knock: ["thwip!"], .grapple: ["🧗"], .flyOff: ["💨"]],
+    carried: Carried(lift: ["!"], later: (0.2, ["HAI-YA!"]), landTime: 1.0),
     sceneEars: { _, _, _ in })
 
 // fur = suit, dark = boots, gloves and folds, belly = skin round the eyes, points = sash and headband
@@ -62,7 +63,7 @@ extension Cat {
         let flip = g == .hop && gt < 0.7, smoke = g == .spin && gt < 1.3, toss = g == .knock && gt < 1.2
         let run = dash ? sin(p.s * 22) : p.step
         let swing = run * (dash ? 45 : 30)
-        let moving = p.step != 0 || dash || climb || leap || flip
+        let moving = p.step != 0 || dash || climb || leap || flip || p.held
         let f = CGFloat(sin(p.s * (moving ? 16 : 3)) * (moving ? 2.5 : 1.2))   // flutter of the tails
         let st: CGFloat = moving ? 1 : 0                                         // how far the tails stream out
         // vanish: shrink into the smoke, hang there unseen, pop back
@@ -72,12 +73,12 @@ extension Cat {
         let lean: Double = dash ? 14 : 0
         let climbA = sin(p.s * 9)
         // arms and legs for the pose under way
-        let tuck = flip || leap
+        let tuck = flip || leap || p.held   // held: curled up in a ball
         let backLeg = climb ? 10 + climbA * 30 : tuck ? -70 : swing
         let frontLeg = climb ? 10 - climbA * 30 : tuck ? -95 : -swing
         let throwA: Double = gt < 0.25 ? 110 * Double(ease(gt / 0.25)) : gt < 0.4 ? 110 - 210 * Double(ease((gt - 0.25) / 0.15)) : -100 + 100 * Double(ease((gt - 0.4) / 0.5))
-        let frontArm = climb ? 175 + climbA * 18 : leap ? 50 : flip ? -60 : toss ? throwA : -swing * 0.9
-        let backArm = climb ? -175 + climbA * 18 : leap ? 60 : flip ? -40 : swing * 0.9
+        let frontArm = climb ? 175 + climbA * 18 : leap ? 50 : flip || p.held ? -60 : toss ? throwA : -swing * 0.9
+        let backArm = climb ? -175 + climbA * 18 : leap ? 60 : flip || p.held ? -40 : swing * 0.9
         // climbing: the rope hangs just in front of the face; one fist grips it above the hood, one below the eyes, hand over hand
         let ropeX: CGFloat = 67
         let gripHi = CGFloat(12 - 3 * climbA), gripLo = CGFloat(27 + 3 * climbA)

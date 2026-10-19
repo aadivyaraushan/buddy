@@ -16,7 +16,10 @@ struct AvatarPose {
     let blink: Bool
     let g: Gesture          // the trick under way, .none if none
     let gt: Double          // seconds into it
-    var flying: Bool { g == .flyOff || g == .grapple }
+    var held = false        // picked up with the mouse, or falling after (Carry.swift)
+    var land = -1.0         // seconds since it landed, -1 if it isn't landing
+    var flying: Bool { g == .flyOff || g == .grapple || held }   // the hero, held: cape out, fist up, as if it flies with you
+    var landing: Bool { land >= 0 }
 }
 
 extension Cat {

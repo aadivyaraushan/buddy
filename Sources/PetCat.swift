@@ -6,6 +6,7 @@ import SwiftUI
 let catPet = PetKind(
     name: "cat", emoji: "🐱", hello: "😼", coats: catBreeds,
     tricks: [.stretch, .yawn, .spin, .wash, .loaf, .sneeze, .zoomies, .knock, .hop],
+    carried: Carried(lift: ["mrrp?"], later: (0.9, ["lick lick"]), landTime: 1.6),
     sceneEars: { c, fur, _ in
         var ears = Path()
         ears.move(to: CGPoint(x: 3, y: -25)); ears.addLine(to: CGPoint(x: 4, y: -32)); ears.addLine(to: CGPoint(x: 9, y: -28)); ears.closeSubpath()

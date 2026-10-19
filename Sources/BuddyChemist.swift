@@ -11,6 +11,7 @@ let chemistBuddy = PetKind(
     tricks: [.stretch, .stretch, .stretch, .hop],
     onRed: .sneeze, onMerge: .capeSwirl, biped: true,
     bursts: [.capeSwirl: ["eureka!", "⚗️"], .stretch: ["🫧"], .hop: ["🧪"], .sneeze: ["💥", "pfft"]],
+    carried: Carried(lift: ["careful!"], land: ["🫧", "💨"], later: (0.6, ["…stable."]), landTime: 1.3),   // flask held out level, other arm up
     sceneEars: { _, _, _ in })
 
 // fur = jacket, coat or suit, dark = hat and trousers, belly = skin, eye = glasses frames, points = what's in the flask.
@@ -57,11 +58,11 @@ extension Cat {
         let puff = fizz ? sin(min(p.gt / 1.6, 1) * .pi) : 0
         let hatLift: CGFloat = fizz && p.gt < 0.6 ? -CGFloat(sin(p.gt / 0.6 * .pi)) * 6 : 0
         // the flask hand: at the hip while walking, held out to swirl, overhead for eureka
-        let armAngle: Double = eureka ? -150 * Double(raise) + (1 - Double(raise)) * swing : swirling || fizz ? -70 : p.asleep ? 10 : swing
+        let armAngle: Double = eureka ? -150 * Double(raise) + (1 - Double(raise)) * swing : swirling || fizz || p.held ? -70 : p.asleep ? 10 : swing
         let hand = CGPoint(x: 54 + 15 * sin(-armAngle * .pi / 180), y: 44 + 15 * cos(-armAngle * .pi / 180))
         return ZStack {
             // back arm and leg
-            Capsule().fill(b.fur).frame(width: 5, height: 15).rotationEffect(.degrees(-swing), anchor: .top).position(x: 41, y: 44)
+            Capsule().fill(b.fur).frame(width: 5, height: 15).rotationEffect(.degrees(p.held ? 160 : -swing), anchor: .top).position(x: 41, y: 44)
             Capsule().fill(b.dark).frame(width: 6, height: 13).rotationEffect(.degrees(swing), anchor: .top).position(x: 44, y: 61)
             Capsule().fill(hex(0x1b1b1f)).frame(width: 8, height: 4).rotationEffect(.degrees(swing), anchor: UnitPoint(x: 0.5, y: -1.8)).position(x: 45, y: 66)
             // front leg
