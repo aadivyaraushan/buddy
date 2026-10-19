@@ -280,7 +280,10 @@ struct Cat: View {
             case .landed:
                 burst(k.land)
                 if k.thud { shakeSoon(after: 0) }
-                if let (at, words) = k.later { DispatchQueue.main.asyncAfter(deadline: .now() + at) { if m.carry == .landed { burst(words) } } }
+                if let (at, words) = k.later {   // only for this landing: a re-grab and second landing within `at` must not fire it twice
+                    let landedAt = m.carryAt
+                    DispatchQueue.main.asyncAfter(deadline: .now() + at) { if m.carry == .landed, m.carryAt == landedAt { burst(words) } }
+                }
             default: break
             }
         }
