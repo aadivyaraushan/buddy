@@ -270,6 +270,9 @@ struct Cat: View {
         }
         .onChange(of: m.hearts) { _ in burst(["💖", "💗", "💖"]) }
         .onChange(of: m.leaves) { _ in burst([["🍃"], ["🌸"], ["🍃", "🍂"]].randomElement()!, fall: true) }
+        .onAppear {   // lifted out of the card-beside layout: closing the card swaps in a new view that starts already held, so no onChange
+            if m.carry == .held, Date().timeIntervalSince(m.carryAt) < 0.5, !petKind.carried.lift.isEmpty { burst(petKind.carried.lift) }
+        }
         .onChange(of: m.carry) { c in
             let k = petKind.carried
             switch c {

@@ -140,7 +140,7 @@ extension AppDelegate {
         let m = model, dt = 1.0 / 30
         switch m.carry {
         case .held:
-            if NSEvent.pressedMouseButtons & 1 == 0 { letGo(); break }   // the button came up but the drag never ended (a cancelled gesture)
+            if NSEvent.pressedMouseButtons & 1 == 0 { letGo(); return true }   // the button came up but the drag never ended (a cancelled gesture); return, or `hold = h` below undoes letGo's landing height
             place()
             let x = petBox.minX
             h.vx = h.vx * 0.5 + Double(x - h.lastX) / dt * 0.5   // smoothed: the pointer moves in jumps
