@@ -73,7 +73,7 @@ func googleSelftest() {
     let s2 = googleSnooze(s1, id: "a", due: "2026-10-18", today: "2026-10-19")                                     // put off again
     precondition(s2["a"] == GSnooze(until: "2026-10-20", due: "2026-10-18") && googleToday(p.tasks, today: "2026-10-19", snoozed: s2).map(\.text) == ["Tomorrow's"])
     // the query reaches back to the oldest put-off task, so Google still sends it
-    precondition(dueWindow(today: "2026-10-25", snoozed: s1) == ("2026-10-18T00:00:00.000Z", "2026-10-26T00:00:00.000Z"))
+    precondition(dueWindow(today: "2026-10-25", snoozed: s1) == ("2026-10-17T00:00:00.000Z", "2026-10-26T00:00:00.000Z"))   // a day of margin
     precondition(dueWindow(today: "2026-10-18", snoozed: s1).min == "2026-10-17T00:00:00.000Z")
     // a put-off task that Google no longer sends as open (done or deleted elsewhere) is forgotten
     precondition(googlePrune(s1, open: ["b", "c"]).isEmpty && googlePrune(s1, open: ["a"]) == s1)
@@ -93,6 +93,11 @@ func googleSelftest() {
     try? FileManager.default.removeItem(atPath: lp)
     try? FileManager.default.createSymbolicLink(atPath: lp, withDestinationPath: ld + "/target")
     precondition(openPrivateLog(lp) == nil && !FileManager.default.fileExists(atPath: ld + "/target"))
+    try? FileManager.default.removeItem(atPath: lp); mkfifo(lp, 0o600)
+    precondition(openPrivateLog(lp) == nil)   // a FIFO is refused, and does not hang
+    try? FileManager.default.removeItem(atPath: ld + "/sub"); try? FileManager.default.createDirectory(atPath: ld + "/real", withIntermediateDirectories: true)
+    try? FileManager.default.createSymbolicLink(atPath: ld + "/sub", withDestinationPath: ld + "/real")
+    precondition(openPrivateLog(lp) == nil && !FileManager.default.fileExists(atPath: ld + "/real/google.log"))   // a symlinked folder is refused
     try? FileManager.default.removeItem(atPath: ld)
 
     // the browser's request can come in pieces: wait for the whole first line, but not for ever
@@ -166,6 +171,13 @@ func callbackServerSelftest() {
     let (text1, _) = reply(c1)
     precondition(result == .code("abc") && text1.hasPrefix("HTTP/1.1 200") && text1.hasSuffix("done</p>"), "split request: \(text1.prefix(40))")
     s1.cancel()
+    // forty junk connections, one after another, don't use up the sign-in: the real one still gets through
+    var late: Callback?
+    let (s5, p5) = serve(deadline: 5, maxOpen: 4) { r, respond in late = r; respond(200, "done") }
+    for _ in 0..<40 { let j = connect(p5); put(j, "GET /favicon.ico HTTP/1.1\r\n\r\n"); _ = reply(j) }
+    let c5 = connect(p5); put(c5, "GET /?state=st&code=xyz HTTP/1.1\r\n\r\n"); _ = reply(c5)
+    precondition(late == .code("xyz"), "the sign-in still works after many connections")
+    s5.cancel()
 
     // a connection that says nothing is closed after its deadline; a fifth at once while four are open; cancel closes the rest
     let (s2, p2) = serve(deadline: 0.4, maxOpen: 4) { _, _ in preconditionFailure("nothing valid was sent") }

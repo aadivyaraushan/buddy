@@ -56,9 +56,10 @@ func googleDay(_ due: String) -> String? {
     return f.date(from: day).map(f.string) == day ? day : nil
 }
 
-/// dueMin / dueMax for tasks.list: a day either side of today, and back to the oldest task you put off, so Google still sends it.
+/// dueMin / dueMax for tasks.list: a day either side of today, and back to the day before the oldest task you put off, so Google
+/// still sends it. (Google doesn't say whether dueMin counts, so a day of margin either way.)
 func dueWindow(today: String, snoozed: [String: GSnooze] = [:]) -> (min: String, max: String) {
-    let from = ([shiftDay(today, -1)] + snoozed.values.map(\.due)).min()!
+    let from = ([today] + snoozed.values.map(\.due)).min().map { shiftDay($0, -1) }!
     return (from + "T00:00:00.000Z", shiftDay(today, 1) + "T00:00:00.000Z")
 }
 
@@ -130,8 +131,12 @@ let googleLogPath = NSHomeDirectory() + "/Library/Logs/Buddy/google.log"
 /// A log file only you can read, or nil. Its folder is made 0700. Refuses a symlink, anything but a plain file, a file with
 /// other links, or one you don't own, so another program can't pre-create it to read it or point it at another file.
 func openPrivateLog(_ path: String) -> FileHandle? {
-    try? FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-    let fd = open(path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+    let dir = (path as NSString).deletingLastPathComponent
+    try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    var ds = stat()
+    guard lstat(dir, &ds) == 0, ds.st_mode & S_IFMT == S_IFDIR, ds.st_uid == getuid() else { return nil }   // not a symlink, and yours
+    if ds.st_mode & 0o077 != 0 { chmod(dir, 0o700) }
+    let fd = open(path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0o600)   // O_NONBLOCK: a FIFO there can't hang Buddy
     guard fd >= 0 else { return nil }
     var st = stat()
     guard fstat(fd, &st) == 0, st.st_mode & S_IFMT == S_IFREG, st.st_uid == getuid(), st.st_nlink == 1 else { close(fd); return nil }
@@ -187,16 +192,16 @@ func signInStep(_ r: TokenReply?, current: Bool) -> SignInStep {
 }
 
 /// The one-time sign-in listener on 127.0.0.1 (any free port). Reads each request's first line in as many pieces as it comes,
-/// with a deadline per connection and a cap on connections. cancel() closes the listener and every connection still waiting.
+/// with a deadline per connection and a cap on open connections. cancel() closes the listener and every connection still waiting.
 /// The first valid answer (a code or a refusal) goes to onResult once; it replies to the browser through `respond`, from any queue.
 final class CallbackServer {
     private let q = DispatchQueue(label: "buddy.google.listen")
-    private let state: String, deadline: TimeInterval, maxOpen: Int, maxTotal: Int
+    private let state: String, deadline: TimeInterval, maxOpen: Int
     private let onResult: (Callback, @escaping (Int, String) -> Void) -> Void
-    private var listener: NWListener?, open: [ObjectIdentifier: NWConnection] = [:], answering: Set<ObjectIdentifier> = [], total = 0, handled = false, done = false   // q only
+    private var listener: NWListener?, open: [ObjectIdentifier: NWConnection] = [:], answering: Set<ObjectIdentifier> = [], handled = false, done = false   // q only
 
-    init(state: String, deadline: TimeInterval = 5, maxOpen: Int = 4, maxTotal: Int = 32, onResult: @escaping (Callback, @escaping (Int, String) -> Void) -> Void) {
-        self.state = state; self.deadline = deadline; self.maxOpen = maxOpen; self.maxTotal = maxTotal; self.onResult = onResult
+    init(state: String, deadline: TimeInterval = 5, maxOpen: Int = 4, onResult: @escaping (Callback, @escaping (Int, String) -> Void) -> Void) {
+        self.state = state; self.deadline = deadline; self.maxOpen = maxOpen; self.onResult = onResult
     }
 
     func start(onReady: @escaping (UInt16) -> Void, onFail: @escaping () -> Void) {
@@ -223,8 +228,7 @@ final class CallbackServer {
     }
 
     private func accept(_ c: NWConnection) {   // q
-        total += 1
-        guard !done, open.count < maxOpen, total <= maxTotal else { c.cancel(); return }
+        guard !done, open.count < maxOpen else { c.cancel(); return }
         let k = ObjectIdentifier(c); open[k] = c
         c.stateUpdateHandler = { [weak self] s in
             switch s { case .cancelled: self?.open[k] = nil; self?.answering.remove(k); case .failed: c.cancel(); default: break }
@@ -378,7 +382,8 @@ extension Model {
         let g = Google.shared, today = isoDay.string(from: now)
         if !g.checked {
             g.checked = true
-            g.gq.async { let c = loadGoogleCreds(), on = !(c?.refresh ?? "").isEmpty; DispatchQueue.main.async { g.hasClient = c != nil; if on { g.signedIn = true; self.fetchGoogle() } } }
+            let epoch = g.epoch
+            g.gq.async { let c = loadGoogleCreds(), on = !(c?.refresh ?? "").isEmpty; DispatchQueue.main.async { guard g.epoch == epoch else { return }; g.hasClient = c != nil; if on { g.signedIn = true; self.fetchGoogle() } } }
             return
         }
         guard g.signedIn, !g.busy, googleDue(now: now, last: g.lastFetch, lastDay: g.fetchedDay, today: today) else { return }
@@ -499,7 +504,7 @@ extension Model {
     /// A new sign-in, forget, or the 5-minute timeout ends this one: it then saves nothing and says nothing.
     func signInGoogle(_ c: GoogleCreds) {
         let g = Google.shared
-        g.server?.cancel(); g.server = nil
+        g.attempts.end(); g.server?.cancel(); g.server = nil
         guard let verifier = randomVerifier() else { glog("sign in: no random bytes"); say("I couldn't start the sign-in. Try again?", .calm, seconds: 10, kind: .ambient); return }
         let me = g.attempts.begin(), state = UUID().uuidString
         var redirect = ""   // set when the listener is ready, before any request can arrive
@@ -522,8 +527,11 @@ extension Model {
                     guard g.attempts.current(me) else { stale(); return }
                     let (d, status) = g.post("https://oauth2.googleapis.com/token", ["client_id": c.clientId, "client_secret": c.clientSecret, "code": code,
                                                                                      "code_verifier": verifier, "grant_type": "authorization_code", "redirect_uri": redirect])
-                    switch signInStep(d.map { parseTokenReply($0, status: status) }, current: g.attempts.current(me)) {
-                    case .stale: stale()
+                    let reply = d.map { parseTokenReply($0, status: status) }
+                    switch signInStep(reply, current: g.attempts.current(me)) {
+                    case .stale:   // ended while Google answered: give back what it gave, so no grant is left that Buddy can't sign out of
+                        if case .ok(_, _, let r?)? = reply { glog("sign in: revoke after end: HTTP \(g.post("https://oauth2.googleapis.com/revoke", ["token": r]).1)") }
+                        stale()
                     case let .fail(log, text, forgetClient):
                         glog("sign in: " + log)
                         if forgetClient { deleteGoogleCreds(); DispatchQueue.main.async { g.hasClient = false } }
