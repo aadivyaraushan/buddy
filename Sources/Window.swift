@@ -149,7 +149,7 @@ struct PetView: View {
                     Spacer(minLength: 0)
                     if m.showCard {
                         card
-                    } else if let b = m.bubble, !m.squatting {
+                    } else if let b = m.bubble, !m.squatting, m.carry == .none {
                         BubbleView(bubble: b, leftSide: m.leftSide, m: m)
                             .onHover { m.holdBubble($0) }
                             .onTapGesture { if b.kind != .quote && b.kind != .thought { b.action?(); m.bubble = nil; m.onExpandChange?() } }
@@ -158,7 +158,8 @@ struct PetView: View {
                 }
             }
         }
-        .padding(8)
+        .padding(m.carry == .none ? EdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8)   // held: the pet sits at carryBox in the bigger window
+                 : EdgeInsets(top: 0, leading: carryBox.x, bottom: carryBox.y, trailing: carrySize.width - carryBox.x - 84))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: (m.showCard ? !m.cardOnLeft : m.leftSide) ? .bottomLeading : .bottomTrailing)   // the pet stays on its edge of the window
     }
 
@@ -191,7 +192,7 @@ struct PetView: View {
 
     /// Bit, with its hover, menu and clicks.
     var pet: some View {
-    Group { if m.dancing { DanceView(m: m) } else { Cat(m: m) } }
+    Group { if m.dancing && m.carry == .none { DanceView(m: m) } else { Cat(m: m) } }
         .padding(.top, 20)
         .overlay(alignment: .top) {   // CI weather: rain while a PR is red, sun after a merge
             if m.sunUntil > Date() { Text("☀️").font(.system(size: 18)) }
@@ -203,7 +204,7 @@ struct PetView: View {
             m.hovering = h
             settle()
             petTimer?.invalidate()
-            if h { petTimer = Timer.scheduledTimer(withTimeInterval: 1.4, repeats: false) { _ in m.hearts += 1 } }
+            if h { petTimer = Timer.scheduledTimer(withTimeInterval: 1.4, repeats: false) { _ in if m.carry == .none { m.hearts += 1 } } }   // a pat, not a lift
         }
         .contextMenu {
             // pet actions (docs/pet-actions-prd.md): the pet's verb, then what it means
@@ -258,6 +259,7 @@ struct PetView: View {
             if let v = m.updateTo { Button("⬆️ Update Buddy to \(v)") { m.update() } }
             Button("Close Buddy") { NSApp.terminate(nil) }   // exit 0: launchd leaves it closed until next login
         }
+        .gesture(DragGesture(minimumDistance: 4).onChanged { _ in m.onCarry?(true) }.onEnded { _ in m.onCarry?(false) })
         .onTapGesture(count: 2) { m.nextBreed() }
         .onTapGesture { m.doGesture() }
         .help("Hover for what needs you · click for a trick · double-click for a new breed · drag to move")
@@ -268,7 +270,7 @@ struct PetView: View {
         if catHover {
             // dwell: a cat walking under a resting cursor must not pop the card open
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                guard catHover, !m.showCard, !m.privacy else { return }   // privacy mode: the card stays closed
+                guard catHover, !m.showCard, !m.privacy, m.carry == .none else { return }   // privacy mode: the card stays closed
                 m.bubble = nil; m.pose = .none; m.tab = "work"; m.showCard = true; m.onExpandChange?()
             }
         } else {
@@ -301,6 +303,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var petSpot: NSPoint?   // where the pet stands while the card is open (the window may then reach below or beside it)
     var placed: NSRect?     // the frame resize() last set: if the window moved since (a drag), the pet moved with it
     var cardRect: NSRect?   // the card's own rectangle on screen while it stands beside the pet
+    var hold: Hold?         // Buddy is held, falling or landing (Carry.swift)
     /// Dragged with the card open: the pet went along, so its remembered spot moves by the same amount.
     func followDrag() {
         guard let sp = petSpot, let pl = placed, panel.frame.origin != pl.origin else { return }
@@ -331,7 +334,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.hasShadow = false
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        panel.isMovableByWindowBackground = true
+        panel.isMovableByWindowBackground = false   // Buddy moves by being picked up (Carry.swift)
         let host = NSHostingView(rootView: PetView(m: model))
         host.sizingOptions = []   // we size the window ourselves; SwiftUI must not grow it
         panel.contentView = host
@@ -345,8 +348,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         blobCenter = { [weak self] in
             guard let self = self else { return .zero }
-            let f = self.petFrame
-            return CGPoint(x: f.minX + 8 + 42, y: f.minY + 8 + 36)
+            let b = self.petBox   // also right while carried
+            return CGPoint(x: b.midX, y: b.midY)
         }
         mouseInPet = { [weak self] in
             guard let self = self else { return false }
@@ -355,6 +358,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return self.petFrame.contains(at) || (self.model.showCard && (self.cardRect ?? self.panel.frame).contains(at))
         }
         model.onExpandChange = { [weak self] in self?.resize() }
+        model.onCarry = { [weak self] in self?.carry($0) }
         model.loadSessions()
         model.loadPRs()
         Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.model.loadSessions() }
@@ -419,6 +423,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Squatter: after 5 idle minutes, sleep on top of the front window. Jump down, annoyed, when you're back.
     func squatter() {
         let m = model
+        if hold != nil { return }
         let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
         if m.squatting {
             if idle < 2 && Date() > squatHoldUntil {
@@ -464,6 +469,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let m = model
         // walkHz while moving; ~2 Hz otherwise
         tick += 1
+        if hold != nil { return }   // held, falling or landing: the carry moves the window (Carry.swift)
         // the den: say where it's going, fade out, stay hidden; back on screen when the time is up or `buddy back`
         if m.inDen {
             if denShownAt == nil { denShownAt = Date() }
@@ -546,6 +552,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Grow the window away from the nearer screen edge, keeping the cat where it is. The card opens above Buddy when it fits,
     /// otherwise beside it (never over it, never with blocks dropped). `petSpot` remembers where the pet stood while the card is open.
     func resize() {
+        if hold != nil { return }   // the carry sizes the window until Buddy is put down
         followDrag()
         let f = panel.frame
         let spot = petSpot ?? NSPoint(x: model.leftSide || f.width <= small.width + 1 ? f.minX : f.maxX - small.width, y: f.minY)

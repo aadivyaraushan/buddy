@@ -10,6 +10,7 @@ let astronautBuddy = PetKind(
     tricks: [.stretch, .stretch, .hop, .grapple, .zoomies, .heroLanding],
     onRed: .flyOff, onMerge: .heroLanding, biped: true,
     bursts: [.heroLanding: ["🚩"], .flyOff: ["Houston…", "🔥"], .grapple: ["🌙"], .stretch: ["wheee"]],
+    carried: Carried(lift: ["wheee"], land: ["💨", "💨"], landTime: 1.4, floaty: true),
     sceneEars: { _, _, _ in })
 
 // fur = suit, dark = backpack and boots, belly = skin (behind the visor), points = trim, mask = visor
@@ -26,7 +27,7 @@ extension Cat {
         let b = p.b, trim = b.points ?? kurtaGold, visor = b.mask ?? maskInk
         let swing = p.step * 16
         let bob = -abs(p.step) * 4                                         // low gravity: up on every step
-        let fly = p.g == .flyOff, float = p.g == .grapple
+        let fly = p.g == .flyOff, float = p.g == .grapple || p.held   // held: floats, as if there's no gravity
         let flag = p.g == .heroLanding && p.gt > 0.45                      // pole in the ground after the landing
         let plant = p.g == .heroLanding && p.gt > 0.45 && p.gt < 1.3       // arm pushing it in
         let roll = p.g == .stretch ? Double(ease(p.gt / 2.4)) * 360 : 0     // slow somersault

@@ -11,6 +11,7 @@ let wizardBuddy = PetKind(
     tricks: [.stretch, .stretch, .spin, .spin, .grapple, .hop],
     onRed: .flyOff, onMerge: .capeSwirl, biped: true,
     bursts: [.capeSwirl: ["✨", "ta-da!", "✨"], .stretch: ["✨"], .spin: ["poof!"], .grapple: ["☁️"], .flyOff: ["💫", "whoosh"]],
+    carried: Carried(lift: ["whoa!"], land: ["✨"], landTime: 1.4),
     sceneEars: { _, _, _ in })
 
 // fur = robe, dark = hat and sleeves' cuffs, belly = skin, points = stars, sash and the staff's glow.
@@ -49,7 +50,7 @@ extension Cat {
         let darkSkin = (NSColor(b.belly).usingColorSpace(.sRGB)?.brightnessComponent ?? 1) < 0.6
         let mouth = darkSkin ? hex(0xf2b8a2) : hex(0x6b3420)
         let waving = (p.g == .capeSwirl || p.g == .stretch) && p.gt < 1.3
-        let fly: CGFloat = p.g == .flyOff ? 1 : 0
+        let fly: CGFloat = p.g == .flyOff || p.held ? 1 : 0   // held: the robe and beard stream as it swings
         let sway = CGFloat(p.step) * 5 + (fly > 0 ? CGFloat(sin(p.s * 16)) * 1.5 : 0)   // the hem swings with each step
         let walkBob = -CGFloat(abs(p.step)) * 2.2   // up on each step, so the walk reads at pet size
         let bob = CGFloat(sin(p.s * 2.4)) * 0.6
@@ -59,6 +60,7 @@ extension Cat {
         let poof = p.g == .spin ? (p.gt < 0.35 ? 1 - p.gt / 0.35 : p.gt < 0.75 ? 0 : min(1, (p.gt - 0.75) / 0.3)) : 1
         let smoke = p.g == .spin && p.gt > 0.15 && p.gt < 1.1 ? sin((p.gt - 0.15) / 0.95 * .pi) : 0
         let cloud = p.g == .grapple
+        let hatDrop: CGFloat = p.landing && p.land < 0.45 ? -12 * (1 - ease(p.land / 0.45)) : 0   // lands a beat after the wizard
         return ZStack {
             ZStack {
                 // back sleeve
@@ -119,7 +121,7 @@ extension Cat {
                     Capsule().fill(gold).frame(width: 21, height: 2.6).position(x: 52, y: 14)
                     Ellipse().fill(b.dark).frame(width: 34, height: 6).position(x: 52, y: 17)
                     WizardTwinkle().fill(gold).frame(width: 7, height: 7).position(x: 53, y: 8.5)
-                }.offset(y: bob).rotationEffect(.degrees(p.asleep ? -6 : 0), anchor: UnitPoint(x: 52 / 84, y: 17 / 72))
+                }.offset(y: bob + hatDrop).rotationEffect(.degrees(p.held ? -28 : p.asleep ? -6 : 0), anchor: UnitPoint(x: 52 / 84, y: 17 / 72))   // held: tips back
                 // front sleeve, hand and staff; the staff swings from the hand
                 Capsule().fill(b.fur).frame(width: 8, height: 15)
                     .overlay(Capsule().fill(b.dark).frame(width: 9, height: 3).offset(y: 6))

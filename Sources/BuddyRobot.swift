@@ -11,6 +11,7 @@ let robotBuddy = PetKind(
     tricks: [.shimmy, .shimmy, .sneeze, .stretch, .spin, .hop],
     onRed: .sneeze, onMerge: .shimmy, biped: true,
     bursts: [.shimmy: ["beep boop!", "🎵"], .sneeze: ["bzzt", "⚡"], .stretch: ["vrrr"], .spin: ["whirr"]],
+    carried: Carried(lift: ["beep?"], land: ["⚡", "clank", "⚡"], later: (0.7, ["beep!"]), landTime: 1.4, thud: true),
     sceneEars: { _, _, _ in })
 
 let robotShells: [Breed] = [
@@ -45,12 +46,13 @@ extension Cat {
         let phase = dancing ? Int(gt / 0.45) % 4 : 0   // each pose holds long enough to register
         let k = g == .stretch ? sin(min(gt / 2.4, 1) * .pi) : 0
         // the short circuit starts with the "bzzt" (bursts fire at gt = 0), then a dazed shake
-        let sneezing = g == .sneeze && gt < 2.0, zapped = sneezing && gt > 0.05 && gt < 1.0, dazed = sneezing && gt >= 1.0 && gt < 1.5
+        let sneezing = g == .sneeze && gt < 2.0
+        let zapped = sneezing && gt > 0.05 && gt < 1.0 || p.landing && p.land < 0.6, dazed = sneezing && gt >= 1.0 && gt < 1.5 || p.landing && p.land >= 0.6 && p.land < 1.1   // a hard landing: sparks, then dazed
         let spinning = g == .spin && gt < 1.6
         let spinCos = spinning ? cos(gt / 1.6 * 4 * .pi) : 1
         let neck = CGFloat(4 * k)   // the head rises on its neck piston in a stretch
         let dim = p.asleep
-        let light = !dim && (zapped ? Int(gt * 20) % 2 == 0 : sin(p.s * 3) > -0.8)
+        let light = !dim && (zapped ? Int(gt * 20) % 2 == 0 : p.held ? Int(p.s * 8) % 2 == 0 : sin(p.s * 3) > -0.8)   // held: the antenna blinks fast
 
         // arms: (upper angle, forearm angle) for back and front
         var back = (a1: -10.0, a2: -4.0), front = (a1: 12.0, a2: 30.0)
@@ -61,6 +63,7 @@ extension Cat {
             default: front = (5, 90); back = (-5, 90)
             }
         } else if k > 0 { front = (12 + 118 * k, 12 + 118 * k); back = (-10 - 120 * k, -10 - 120 * k) }
+        else if p.held { front = (150, 165); back = (-150, -165) }   // held: arms up
         else if zapped { let j = Double(Int(gt * 14) % 2) * 30; front = (60 + j, 120 - j); back = (-60 - j, -120 + j) }
         else if p.step != 0 { front = (10 + 26 * max(0, -st), 28 + 26 * max(0, -st)); back = (-10 - 26 * max(0, st), -4 - 26 * max(0, st)) }   // swing out, never across the body
         else if p.asleep { front = (3, 6); back = (-3, -2) }

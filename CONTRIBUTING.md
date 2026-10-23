@@ -13,6 +13,7 @@ Thanks for helping! Buddy is small on purpose: a handful of Swift files, one Pyt
 | `Sources/Theme.swift` | Theme colours, the card frame, and parts every theme shares (quote carousel, rings) |
 | `Sources/Burrow.swift`, `Glass.swift`, `Ink.swift` | One card per theme |
 | `Sources/Window.swift` | The floating window, bubbles, and walking along the screen |
+| `Sources/Carry.swift` | Pick Buddy up with the mouse: the swing while held, the fall, the landing (each pet's words live in its `PetKind`) |
 | `Sources/Life.swift` | The Personal tab: profile, goals, to-dos and their nudges |
 | `Sources/Google.swift` | Google Tasks: sign-in (PKCE, loopback), Keychain, today's tasks. `GoogleSelftest.swift` checks its pure parts |
 | `Sources/Codex.swift`, `Disk.swift`, `Inbox.swift` | Codex sessions, disk and worktree watch, `buddy say` messages |

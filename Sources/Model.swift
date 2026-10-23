@@ -77,6 +77,9 @@ final class Model: ObservableObject {
     @Published var gestureAt = Date.distantPast
     var zoomies = false
     @Published var squatting = false
+    @Published var carry: Carry = .none          // picked up with the mouse (Carry.swift)
+    @Published var carryAt = Date.distantPast   // when this part of the carry began
+    @Published var swing = 0.0                  // degrees the held body swings from the grab point
     @Published var limits: [Limit] = []
     func loadLimits() {
         DispatchQueue.global().async {
@@ -181,6 +184,7 @@ final class Model: ObservableObject {
     /// A little bit of business: stretch, yawn, chase tail, wash, loaf, sneeze, zoomies, knock something off, hop.
     /// Bears: rear up and roar, eat honey, swipe a fish out of the air, scratch their back.
     func doGesture(_ g: Gesture? = nil) {
+        if carry != .none { return }   // held or landing: no tricks
         let calm: [Gesture] = petKind.biped ? [.stretch] : [.loaf, .yawn, .stretch]   // relax mode: slow, sleepy tricks
         let pick = g ?? (relaxing ? calm : petKind.tricks + (drip ? [.shimmy, .shimmy] : []) + costumeTricks).randomElement()!
         gesture = pick
@@ -266,6 +270,7 @@ final class Model: ObservableObject {
         }
     }
     var onExpandChange: (() -> Void)?
+    var onCarry: ((Bool) -> Void)?   // the pointer drags Buddy (true) or lets go (false); the window moves it (Carry.swift)
 
     var expanded: Bool { bubble != nil || showCard }
     var snoozed: Bool { (snoozedUntil ?? .distantPast) > Date() }

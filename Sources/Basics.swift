@@ -19,6 +19,8 @@ struct Session: Codable, Identifiable, Equatable {
     var source: String? = nil   // which agent (see Agents.swift): nil = Claude Code, "codex-desktop" (ChatGPT app) or "codex-cli"
     var tty: String? = nil        // the terminal tab it runs in
     var termApp: String? = nil    // Terminal, iTerm2, Ghostty, Cursor… ("claude"/"ChatGPT" = the desktop apps)
+    var headless: Bool? = nil     // started by a script (`codex exec`) or Codex's own helper, not typed by you
+    var promptedAt: Double? = nil // when you last typed a prompt (a background task's turn doesn't count)
     var herdrPane: String? = nil  // set when it runs inside a herdr pane
     var said: String? = nil       // the agent's own last line when it finished (beat.py)
 }
@@ -147,7 +149,10 @@ enum Day {
 }
 
 /// True while any app is recording from the default microphone (a call, a huddle, dictation). Needs no permission.
+/// Tests set this: the real microphone (a call, dictation) must not change what the selftest sees.
+var micInUseOverride: Bool?
 func micInUse() -> Bool {
+    if let o = micInUseOverride { return o }
     var dev = AudioDeviceID(0), size = UInt32(MemoryLayout<AudioDeviceID>.size)
     var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
     guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &dev) == noErr else { return false }
