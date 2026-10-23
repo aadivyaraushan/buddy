@@ -56,12 +56,10 @@ func googleDay(_ due: String) -> String? {
     return f.date(from: day).map(f.string) == day ? day : nil
 }
 
-/// dueMin / dueMax for tasks.list: a day either side of today. googleToday keeps exactly today.
-func dueWindow(today: String) -> (min: String, max: String) {
-    let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(identifier: "UTC"); f.dateFormat = "yyyy-MM-dd"
-    let d = f.date(from: today) ?? Date()
-    let s = { (n: Double) in f.string(from: d.addingTimeInterval(n * 86400)) + "T00:00:00.000Z" }
-    return (s(-1), s(1))
+/// dueMin / dueMax for tasks.list: a day either side of today, and back to the oldest task you put off, so Google still sends it.
+func dueWindow(today: String, snoozed: [String: GSnooze] = [:]) -> (min: String, max: String) {
+    let from = ([shiftDay(today, -1)] + snoozed.values.map(\.due)).min()!
+    return (from + "T00:00:00.000Z", shiftDay(today, 1) + "T00:00:00.000Z")
 }
 
 /// One page of tasks.list or tasklists.list → items and the next page token.
@@ -75,11 +73,24 @@ func parseGoogleTasks(_ data: Data, list: String) -> (tasks: [GTask], next: Stri
     return (items, o["nextPageToken"] as? String)
 }
 
-/// Open tasks due on `today` (your local yyyy-MM-dd), minus the ones you put off ("☾ tomorrow": id → the day they come back).
-func googleToday(_ tasks: [GTask], today: String, snoozed: [String: String]) -> [Todo] {
-    tasks.filter { $0.status == "needsAction" && !$0.hidden && !$0.deleted && $0.due.flatMap(googleDay) == today
-                   && !$0.title.trimmingCharacters(in: .whitespaces).isEmpty && (snoozed[$0.id] ?? "") <= today }
-        .map { Todo(text: $0.title.trimmingCharacters(in: .whitespaces), due: isoDay.date(from: today), gid: $0.id, glist: $0.list) }
+/// A task you put off with "☾ tomorrow": hidden in Buddy until `until`, then on the list every day until you tick it.
+/// `due` is its Google due day, so the query can still reach it. Kept in Buddy only; Google is not changed.
+struct GSnooze: Codable, Equatable { var until, due: String }
+
+/// Put off `id` until the day after `today`. A task put off again keeps its first due day.
+func googleSnooze(_ s: [String: GSnooze], id: String, due: String, today: String) -> [String: GSnooze] {
+    var out = s; out[id] = GSnooze(until: shiftDay(today, 1), due: s[id]?.due ?? due); return out
+}
+/// Forget put-off tasks that Google no longer sends as open: done or deleted, there or here.
+func googlePrune(_ s: [String: GSnooze], open: Set<String>) -> [String: GSnooze] { s.filter { open.contains($0.key) } }
+
+/// Open tasks due on `today` (your local yyyy-MM-dd), and tasks you put off that are back. Not the ones still put off.
+func googleToday(_ tasks: [GTask], today: String, snoozed: [String: GSnooze]) -> [Todo] {
+    tasks.filter { t in
+        guard t.status == "needsAction", !t.hidden, !t.deleted, !t.title.trimmingCharacters(in: .whitespaces).isEmpty, let d = t.due.flatMap(googleDay) else { return false }
+        if let s = snoozed[t.id] { return s.until <= today && d <= today }
+        return d == today
+    }.map { Todo(text: $0.title.trimmingCharacters(in: .whitespaces), due: isoDay.date(from: today), gid: $0.id, glist: $0.list) }
 }
 
 func googleMorningText(_ todos: [Todo]) -> String? {
@@ -114,11 +125,137 @@ func saveGoogleCreds(_ c: GoogleCreds) -> Bool {
 }
 func deleteGoogleCreds() { run("/usr/bin/security", ["delete-generic-password", "-s", googleKeychain, "-a", "buddy"]) }
 
-/// What Buddy did with Google, for when something goes wrong: events and HTTP codes only, never a token or a task. Readable by you only.
+let googleLogPath = NSHomeDirectory() + "/Library/Logs/Buddy/google.log"
+
+/// A log file only you can read, or nil. Its folder is made 0700. Refuses a symlink, anything but a plain file, a file with
+/// other links, or one you don't own, so another program can't pre-create it to read it or point it at another file.
+func openPrivateLog(_ path: String) -> FileHandle? {
+    try? FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    let fd = open(path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+    guard fd >= 0 else { return nil }
+    var st = stat()
+    guard fstat(fd, &st) == 0, st.st_mode & S_IFMT == S_IFREG, st.st_uid == getuid(), st.st_nlink == 1 else { close(fd); return nil }
+    if st.st_mode & 0o077 != 0 { fchmod(fd, 0o600) }
+    return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+}
+
+/// An error code from Google or the browser, fit for the log: short letters, digits, "_" and spaces, else "other".
+func logSafe(_ s: String) -> String { s.range(of: "^[A-Za-z0-9_ ]{1,40}$", options: .regularExpression) != nil ? s : "other" }
+
+/// What Buddy did with Google, for when something goes wrong: fixed events and error codes only, never a token, a task or an id.
 func glog(_ s: String) {
-    let path = "/tmp/buddy.google.log", line = "\(ISO8601DateFormatter().string(from: Date())) \(s)\n"
-    if let h = FileHandle(forWritingAtPath: path) ?? { FileManager.default.createFile(atPath: path, contents: nil, attributes: [.posixPermissions: 0o600]); return FileHandle(forWritingAtPath: path) }() {
-        h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); h.closeFile()
+    openPrivateLog(googleLogPath)?.write("\(ISO8601DateFormatter().string(from: Date())) \(s)\n".data(using: .utf8)!)
+}
+
+/// 32 random bytes as a PKCE verifier, or nil if the system has no randomness to give.
+func randomVerifier() -> String? {
+    var raw = Data(count: 32)
+    guard raw.withUnsafeMutableBytes({ SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }) == errSecSuccess else { return nil }
+    return base64url(raw)
+}
+
+/// The browser's request, as far as it has come: the first line once it is complete, or too long to be ours.
+enum LineRead: Equatable { case more, line(String), tooBig }
+func readRequestLine(_ buf: Data, limit: Int = 8192) -> LineRead {
+    if let r = buf.range(of: Data("\r\n".utf8)) { return r.lowerBound - buf.startIndex <= limit ? .line(String(decoding: buf[buf.startIndex..<r.lowerBound], as: UTF8.self)) : .tooBig }
+    return buf.count > limit ? .tooBig : .more
+}
+
+/// Each sign-in gets a number. Forget, a new sign-in or the timeout ends it; an ended sign-in must not save or sign you in.
+/// Read from any thread.
+final class SignInAttempts {
+    private let lock = NSLock(); private var n = 0, live = 0
+    func begin() -> Int { lock.lock(); defer { lock.unlock() }; n += 1; live = n; return n }
+    func current(_ id: Int) -> Bool { lock.lock(); defer { lock.unlock() }; return id == live }
+    /// End the running sign-in; with an id, only if that one is still running.
+    func end(ifCurrent id: Int? = nil) { lock.lock(); defer { lock.unlock() }; if id == nil || id == live { live = 0 } }
+}
+
+/// What to do with Google's answer to the sign-in code. nil = no network.
+enum SignInStep: Equatable { case stale; case save(access: String, expiresIn: Int, refresh: String); case fail(log: String, text: String, forgetClient: Bool) }
+func signInStep(_ r: TokenReply?, current: Bool) -> SignInStep {
+    guard current else { return .stale }
+    switch r {
+    case nil: return .fail(log: "token exchange: no network", text: "I couldn't reach Google. Check your connection, then try again.", forgetClient: false)
+    case let .ok(a, exp, refresh?)?: return .save(access: a, expiresIn: exp, refresh: refresh)
+    case .ok(_, _, nil)?: return .fail(log: "token exchange: ok, but no refresh token", text: "Google signed you in but gave no lasting token. Try again.", forgetClient: false)
+    case .revoked?: return .fail(log: "token exchange: invalid_grant", text: "Google didn't accept the sign-in code. Try again.", forgetClient: false)
+    case .failed(let e)?:   // a bad client: ask for it again next time
+        return .fail(log: "token exchange: \(logSafe(e))", text: "Google didn't accept the sign-in (\(logSafe(e))). Check the client ID and secret, then try again.",
+                     forgetClient: e == "invalid_client" || e == "unauthorized_client")
+    }
+}
+
+/// The one-time sign-in listener on 127.0.0.1 (any free port). Reads each request's first line in as many pieces as it comes,
+/// with a deadline per connection and a cap on connections. cancel() closes the listener and every connection still waiting.
+/// The first valid answer (a code or a refusal) goes to onResult once; it replies to the browser through `respond`, from any queue.
+final class CallbackServer {
+    private let q = DispatchQueue(label: "buddy.google.listen")
+    private let state: String, deadline: TimeInterval, maxOpen: Int, maxTotal: Int
+    private let onResult: (Callback, @escaping (Int, String) -> Void) -> Void
+    private var listener: NWListener?, open: [ObjectIdentifier: NWConnection] = [:], answering: Set<ObjectIdentifier> = [], total = 0, handled = false, done = false   // q only
+
+    init(state: String, deadline: TimeInterval = 5, maxOpen: Int = 4, maxTotal: Int = 32, onResult: @escaping (Callback, @escaping (Int, String) -> Void) -> Void) {
+        self.state = state; self.deadline = deadline; self.maxOpen = maxOpen; self.maxTotal = maxTotal; self.onResult = onResult
+    }
+
+    func start(onReady: @escaping (UInt16) -> Void, onFail: @escaping () -> Void) {
+        let params = NWParameters.tcp
+        params.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)   // loopback only: nothing else on the network can reach it
+        guard let l = try? NWListener(using: params) else { glog("sign in: no listener"); onFail(); return }
+        l.stateUpdateHandler = { [weak self] s in
+            switch s {
+            case .ready: if let p = l.port?.rawValue { onReady(p) }
+            case .failed: glog("sign in: listener failed"); self?.stop(); onFail()
+            default: break
+            }
+        }
+        l.newConnectionHandler = { [weak self] c in self?.accept(c) }
+        q.sync { listener = l }
+        l.start(queue: q)
+    }
+
+    func cancel() { q.async { self.stop() } }
+
+    private func stop() {   // q
+        done = true; listener?.cancel(); listener = nil
+        for (k, c) in open where !answering.contains(k) { c.cancel() }   // one being answered closes after its page is sent
+    }
+
+    private func accept(_ c: NWConnection) {   // q
+        total += 1
+        guard !done, open.count < maxOpen, total <= maxTotal else { c.cancel(); return }
+        let k = ObjectIdentifier(c); open[k] = c
+        c.stateUpdateHandler = { [weak self] s in
+            switch s { case .cancelled: self?.open[k] = nil; self?.answering.remove(k); case .failed: c.cancel(); default: break }
+        }
+        c.start(queue: q)
+        q.asyncAfter(deadline: .now() + deadline) { [weak self] in if let self, self.open[k] != nil, !self.answering.contains(k) { c.cancel() } }
+        q.asyncAfter(deadline: .now() + 60) { [weak self] in if self?.open[k] != nil { c.cancel() } }   // even one being answered
+        read(c, Data())
+    }
+
+    private func read(_ c: NWConnection, _ buf: Data) {   // q
+        c.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] d, _, eof, err in
+            guard let self, self.open[ObjectIdentifier(c)] != nil else { return }
+            let b = buf + (d ?? Data())
+            switch readRequestLine(b) {
+            case .more: if eof || err != nil { c.cancel() } else { self.read(c, b) }
+            case .tooBig: CallbackServer.respond(c, 431, "Request too large.")
+            case .line(let line):
+                let r = self.handled ? .bad : callbackResult(line, state: self.state)
+                guard r != .bad else { CallbackServer.respond(c, 404, "Not found."); return }   // the favicon, a stray request, or a repeat
+                self.handled = true; self.answering.insert(ObjectIdentifier(c))
+                self.onResult(r) { code, msg in CallbackServer.respond(c, code, msg) }
+            }
+        }
+    }
+
+    static func respond(_ c: NWConnection, _ code: Int, _ msg: String) {
+        let body = "<!doctype html><meta charset=utf-8><title>Buddy</title><body style=\"font:16px -apple-system;margin:4em;text-align:center\"><p>\(msg)</p>"
+        let reason = code == 200 ? "OK" : code == 431 ? "Request Header Fields Too Large" : "Not Found"
+        c.send(content: "HTTP/1.1 \(code) \(reason)\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)".data(using: .utf8),
+               completion: .contentProcessed { _ in c.cancel() })
     }
 }
 
@@ -140,7 +277,8 @@ final class Google {
     var doneAt: [String: Date] = [:]        // ticked in Buddy: hidden until a fetch that started after Google said OK
     var lastFetch = Date.distantPast, fetchedDay = "", busy = false
     var access: String?, accessUntil = Date.distantPast   // gq only
-    var listener: NWListener?
+    var server: CallbackServer?             // the sign-in listener, while a sign-in runs
+    let attempts = SignInAttempts()
 
     /// POST a form, wait for the reply. nil data = no network.
     func post(_ url: String, _ form: [String: String]) -> (Data?, Int) {
@@ -166,12 +304,13 @@ final class Google {
         switch parseTokenReply(d, status: code) {
         case let .ok(a, exp, _): access = a; accessUntil = Date().addingTimeInterval(Double(exp) - 60); glog("refresh: ok"); return .success(a)
         case .revoked: glog("refresh: invalid_grant (revoked or expired)"); return .failure(.revoked)
-        case .failed(let e): glog("refresh: \(e)"); return .failure(.failed(e))
+        case .failed(let e): glog("refresh: \(logSafe(e))"); return .failure(.failed(logSafe(e)))
         }
     }
 
     /// One Tasks API call with the token; a 401 gets one fresh token and one retry. On gq.
-    func api(_ method: String, _ url: URL, json: [String: Any]? = nil) -> Result<Data, GErr> {
+    /// `what` names the call in the log ("lists", "tasks", "tick"): the URL has list and task ids, so it stays out.
+    func api(_ method: String, _ url: URL, what: String, json: [String: Any]? = nil) -> Result<Data, GErr> {
         for attempt in 0..<2 {
             let t: String
             switch token() { case .success(let s): t = s; case .failure(let e): return .failure(e) }
@@ -179,27 +318,27 @@ final class Google {
             r.setValue("Bearer " + t, forHTTPHeaderField: "Authorization")
             if let json { r.setValue("application/json", forHTTPHeaderField: "Content-Type"); r.httpBody = try? JSONSerialization.data(withJSONObject: json) }
             let (d, code) = send(r)
-            guard let d else { glog("\(method) \(url.path): no network"); return .failure(.offline) }
+            guard let d else { glog("\(what): no network"); return .failure(.offline) }
             if code == 401 && attempt == 0 { access = nil; continue }
-            guard (200..<300).contains(code) else { glog("\(method) \(url.path): HTTP \(code)"); return .failure(.failed("HTTP \(code)")) }
+            guard (200..<300).contains(code) else { glog("\(what): HTTP \(code)"); return .failure(.failed("HTTP \(code)")) }
             return .success(d)
         }
         return .failure(.failed("HTTP 401"))
     }
 
-    /// Every list's open tasks due within a day of today. On gq.
-    func fetch(today: String) -> Result<[GTask], GErr> {
+    /// Every list's open tasks due within a day of today, or since the oldest task you put off. On gq.
+    func fetch(today: String, snoozed: [String: GSnooze]) -> Result<[GTask], GErr> {
         let base = "https://tasks.googleapis.com/tasks/v1"
         var lists: [String] = [], page: String? = nil
         repeat {
             var c = URLComponents(string: base + "/users/@me/lists")!
             c.queryItems = [.init(name: "maxResults", value: "100")] + (page.map { [.init(name: "pageToken", value: $0)] } ?? [])
-            switch api("GET", c.url!) {
+            switch api("GET", c.url!, what: "lists") {
             case .success(let d): let p = parseGoogleTasks(d, list: ""); lists += p.tasks.map(\.id); page = p.next
             case .failure(let e): return .failure(e)
             }
         } while page != nil
-        let w = dueWindow(today: today)
+        let w = dueWindow(today: today, snoozed: snoozed)
         var all: [GTask] = []
         for l in lists {
             page = nil
@@ -207,7 +346,7 @@ final class Google {
                 var c = URLComponents(string: base + "/lists/\(pathPart(l))/tasks")!
                 c.queryItems = [.init(name: "dueMin", value: w.min), .init(name: "dueMax", value: w.max), .init(name: "showCompleted", value: "false"),
                                 .init(name: "maxResults", value: "100")] + (page.map { [.init(name: "pageToken", value: $0)] } ?? [])
-                switch api("GET", c.url!) {
+                switch api("GET", c.url!, what: "tasks") {
                 case .success(let d): let p = parseGoogleTasks(d, list: l); all += p.tasks; page = p.next
                 case .failure(let e): return .failure(e)
                 }
@@ -223,8 +362,11 @@ extension Model {
     var googleSignedIn: Bool { Google.shared.signedIn }
     var googleHasClient: Bool { Google.shared.hasClient }
 
-    /// "☾ tomorrow" on Google rows: id → the day it comes back. Kept in Buddy only; Google is not changed.
-    private var googleSnoozed: [String: String] { UserDefaults.standard.dictionary(forKey: "bit.gsnooze") as? [String: String] ?? [:] }
+    /// "☾ tomorrow" on Google rows (see GSnooze). Kept in Buddy only; Google is not changed.
+    private var googleSnoozed: [String: GSnooze] {
+        get { UserDefaults.standard.data(forKey: "bit.gsnooze").flatMap { try? JSONDecoder().decode([String: GSnooze].self, from: $0) } ?? [:] }
+        set { UserDefaults.standard.set(try? JSONEncoder().encode(newValue), forKey: "bit.gsnooze") }
+    }
     func showGoogle() {
         let g = Google.shared
         let t = googleToday(g.raw.filter { g.doneAt[$0.id] == nil }, today: isoDay.string(from: Date()), snoozed: googleSnoozed)
@@ -244,16 +386,19 @@ extension Model {
     }
 
     func fetchGoogle() {
-        let g = Google.shared, today = isoDay.string(from: Date()), epoch = g.epoch, started = Date()
+        let g = Google.shared, today = isoDay.string(from: Date()), epoch = g.epoch, started = Date(), snoozed = googleSnoozed
         g.busy = true; g.lastFetch = started; g.fetchedDay = today
         g.gq.async {
-            let r = g.fetch(today: today)
+            let r = g.fetch(today: today, snoozed: snoozed)
             DispatchQueue.main.async {
                 g.busy = false
                 guard g.epoch == epoch else { return }   // signed out (or in again) meanwhile
                 switch r {
                 case .success(let t):
                     g.raw = t
+                    // put-off tasks this fetch asked for but Google no longer has open: forget them (ones put off since, keep)
+                    let gone = Set(snoozed.keys).subtracting(googlePrune(snoozed, open: Set(t.filter { $0.status == "needsAction" && !$0.deleted }.map(\.id))).keys)
+                    if !gone.isEmpty { self.googleSnoozed = self.googleSnoozed.filter { !gone.contains($0.key) } }
                     g.doneAt = g.doneAt.filter { $0.value >= started }   // this fetch saw those ticks: Google has them
                     self.showGoogle()
                 case .failure(.revoked): self.googleLost()
@@ -262,7 +407,7 @@ extension Model {
                     self.showGoogle()
                     if Day.once("gtasks-error") {
                         let hint = e == "HTTP 403" ? " Is the Google Tasks API enabled in your Cloud project?" : e == "invalid_client" ? " Your OAuth client was deleted or its secret changed: sign out of Google Tasks, then connect again." : ""
-                        self.say("Google Tasks isn't working (\(e)).\(hint) Details: /tmp/buddy.google.log", .calm, seconds: 20, kind: .ambient)
+                        self.say("Google Tasks isn't working (\(e)).\(hint) Details: ~/Library/Logs/Buddy/google.log", .calm, seconds: 20, kind: .ambient)
                     }
                 }
             }
@@ -284,7 +429,7 @@ extension Model {
         g.doneAt[id] = .distantFuture; showGoogle(); celebrate += 1   // gone at once; back if Google says no
         let url = URL(string: "https://tasks.googleapis.com/tasks/v1/lists/\(pathPart(list))/tasks/\(pathPart(id))")!
         g.gq.async {
-            let r = g.api("PATCH", url, json: ["status": "completed"])
+            let r = g.api("PATCH", url, what: "tick", json: ["status": "completed"])
             DispatchQueue.main.async {
                 guard g.epoch == epoch else { return }
                 switch r {
@@ -298,10 +443,8 @@ extension Model {
 
     func snoozeGoogle(_ t: Todo) {
         guard let id = t.gid else { return }
-        let today = isoDay.string(from: Date())
-        var s = googleSnoozed.filter { $0.value > today }   // drop ones that are back already
-        s[id] = isoDay.string(from: Date().addingTimeInterval(86400))
-        UserDefaults.standard.set(s, forKey: "bit.gsnooze"); showGoogle()
+        let today = isoDay.string(from: Date()), due = Google.shared.raw.first { $0.id == id }?.due.flatMap(googleDay) ?? today
+        googleSnoozed = googleSnooze(googleSnoozed, id: id, due: due, today: today); showGoogle()
     }
 
     /// Once a day, 10:00–12:00, if Google has tasks for today. Privacy mode keeps it for later rather than spending it.
@@ -313,8 +456,10 @@ extension Model {
     }
 
     /// Revoke at Google, delete the Keychain item (client and token). Also works after access was lost, to forget the client.
+    /// Ends a sign-in still running, so finishing it in the browser afterwards saves nothing.
     func signOutGoogle() {
         let g = Google.shared
+        g.attempts.end(); g.server?.cancel(); g.server = nil
         g.signedIn = false; g.hasClient = false; g.epoch += 1; g.raw = []; g.doneAt = [:]; google = []
         g.gq.async {
             g.access = nil
@@ -334,9 +479,11 @@ extension Model {
         }
     }
 
-    /// Ask for your OAuth client (once), then sign in in your browser.
+    /// Ask for your OAuth client (once), then sign in in your browser. The Keychain is read on gq: a locked one must not freeze Buddy.
     func connectGoogle() {
-        let saved = loadGoogleCreds()
+        Google.shared.gq.async { let saved = loadGoogleCreds(); DispatchQueue.main.async { self.connectGoogle(saved) } }
+    }
+    private func connectGoogle(_ saved: GoogleCreds?) {
         var c = saved ?? GoogleCreds(clientId: "", clientSecret: "", refresh: "")
         if c.clientId.isEmpty || c.clientSecret.isEmpty {
             guard let id = try? ask("Connect Google Tasks\n\nBuddy uses your own Google OAuth client, type \"Desktop app\". README → Google Tasks has the 5-minute setup.\n\nPaste the client ID:", "1234-abc.apps.googleusercontent.com"),
@@ -348,72 +495,65 @@ extension Model {
         signInGoogle(c)
     }
 
-    /// The installed-app flow: listen on 127.0.0.1 (any free port), open Google's page, take the code, swap it for tokens.
+    /// The installed-app flow: listen on 127.0.0.1, open Google's page, take the code, swap it for tokens.
+    /// A new sign-in, forget, or the 5-minute timeout ends this one: it then saves nothing and says nothing.
     func signInGoogle(_ c: GoogleCreds) {
-        let g = Google.shared, lq = DispatchQueue(label: "buddy.google.listen")
-        g.listener?.cancel()
-        let params = NWParameters.tcp
-        params.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)   // loopback only: nothing else on the network can reach it
-        guard let l = try? NWListener(using: params) else { glog("sign in: no listener"); say("I couldn't start the sign-in. Try again?", .calm, seconds: 10, kind: .ambient); return }
-        g.listener = l
-        var raw = Data(count: 32); _ = raw.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
-        let verifier = base64url(raw), state = UUID().uuidString
-        var redirect = "", handled = false   // lq only
-        func finish(_ text: String) { DispatchQueue.main.async { l.cancel(); if g.listener === l { g.listener = nil }; self.say(text, .calm, seconds: 12, kind: .ambient) } }
-        l.stateUpdateHandler = { s in
-            switch s {
-            case .ready:
-                guard let port = l.port?.rawValue else { return }
-                redirect = "http://127.0.0.1:\(port)"
-                glog("sign in: listening on port \(port)")
-                DispatchQueue.main.async {
-                    NSWorkspace.shared.open(googleAuthURL(clientId: c.clientId, redirect: redirect, challenge: pkceChallenge(verifier), state: state))
-                    self.say("Finish signing in to Google in your browser 🌐", .calm, seconds: 20, kind: .ambient)
-                }
-            case .failed(let e): glog("sign in: listener failed \(e)"); finish("The sign-in stopped. Try again?")
-            default: break
+        let g = Google.shared
+        g.server?.cancel(); g.server = nil
+        guard let verifier = randomVerifier() else { glog("sign in: no random bytes"); say("I couldn't start the sign-in. Try again?", .calm, seconds: 10, kind: .ambient); return }
+        let me = g.attempts.begin(), state = UUID().uuidString
+        var redirect = ""   // set when the listener is ready, before any request can arrive
+        /// End this sign-in (if it is still the one running) and say how it went.
+        func finish(_ text: String) {
+            DispatchQueue.main.async {
+                guard g.attempts.current(me) else { return }
+                g.attempts.end(); g.server?.cancel(); g.server = nil
+                self.say(text, .calm, seconds: 12, kind: .ambient)
             }
         }
-        l.newConnectionHandler = { conn in
-            conn.start(queue: lq)
-            conn.receive(minimumIncompleteLength: 1, maximumLength: 16384) { data, _, _, _ in
-                let line = data.flatMap { String(data: $0, encoding: .utf8) }?.components(separatedBy: "\r\n").first ?? ""
-                let page = { (code: Int, msg: String) in
-                    let body = "<!doctype html><meta charset=utf-8><title>Buddy</title><body style=\"font:16px -apple-system;margin:4em;text-align:center\"><p>\(msg)</p>"
-                    conn.send(content: "HTTP/1.1 \(code) \(code == 200 ? "OK" : "Not Found")\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)".data(using: .utf8),
-                              completion: .contentProcessed { _ in conn.cancel() })
-                }
-                let result = handled ? .bad : callbackResult(line, state: state)
-                switch result {
-                case .bad: page(404, "Not found."); return   // the favicon, a stray request, or a repeat: keep waiting / ignore
-                case .denied(let e): handled = true; glog("sign in: denied (\(e))"); page(200, "Sign-in cancelled. You can close this tab."); finish("Google sign-in cancelled.")
-                case .code(let code):
-                    handled = true; glog("sign in: got a code")
-                    g.gq.async {
-                        let (d, status) = g.post("https://oauth2.googleapis.com/token", ["client_id": c.clientId, "client_secret": c.clientSecret, "code": code,
-                                                                                         "code_verifier": verifier, "grant_type": "authorization_code", "redirect_uri": redirect])
-                        let fail = { (log: String, text: String) in glog("sign in: " + log); page(200, "Buddy couldn't finish the sign-in. See Buddy's bubble."); finish(text) }
-                        guard let d else { fail("token exchange: no network", "I couldn't reach Google. Check your connection, then try again."); return }
-                        switch parseTokenReply(d, status: status) {
-                        case .ok(_, _, nil): fail("token exchange: ok, but no refresh token", "Google signed you in but gave no lasting token. Try again.")
-                        case .revoked: fail("token exchange: invalid_grant", "Google didn't accept the sign-in code. Try again.")
-                        case .failed(let e):
-                            if e == "invalid_client" || e == "unauthorized_client" { deleteGoogleCreds(); DispatchQueue.main.async { g.hasClient = false } }   // a bad client: ask for it again next time
-                            fail("token exchange: \(e)", "Google didn't accept the sign-in (\(e)). Check the client ID and secret, then try again.")
-                        case let .ok(access, exp, refresh?):
-                            var saved = c; saved.refresh = refresh
-                            guard saveGoogleCreds(saved) else { fail("keychain save failed", "I couldn't save the token to your Keychain."); return }
-                            g.access = access; g.accessUntil = Date().addingTimeInterval(Double(exp) - 60)
-                            glog("sign in: ok")
-                            page(200, "🐾 Buddy is connected to Google Tasks. You can close this tab.")
-                            DispatchQueue.main.async { g.signedIn = true; g.hasClient = true; g.checked = true; g.epoch += 1; self.fetchGoogle() }
+        let server = CallbackServer(state: state) { result, respond in
+            switch result {
+            case .bad: break   // the server answers those itself
+            case .denied(let e): glog("sign in: denied (\(logSafe(e)))"); respond(200, "Sign-in cancelled. You can close this tab."); finish("Google sign-in cancelled.")
+            case .code(let code):
+                glog("sign in: got a code")
+                g.gq.async {
+                    let stale = { glog("sign in: ended in Buddy, code dropped"); respond(200, "This sign-in was cancelled in Buddy. You can close this tab.") }
+                    guard g.attempts.current(me) else { stale(); return }
+                    let (d, status) = g.post("https://oauth2.googleapis.com/token", ["client_id": c.clientId, "client_secret": c.clientSecret, "code": code,
+                                                                                     "code_verifier": verifier, "grant_type": "authorization_code", "redirect_uri": redirect])
+                    switch signInStep(d.map { parseTokenReply($0, status: status) }, current: g.attempts.current(me)) {
+                    case .stale: stale()
+                    case let .fail(log, text, forgetClient):
+                        glog("sign in: " + log)
+                        if forgetClient { deleteGoogleCreds(); DispatchQueue.main.async { g.hasClient = false } }
+                        respond(200, "Buddy couldn't finish the sign-in. See Buddy's bubble."); finish(text)
+                    case let .save(access, exp, refresh):
+                        // forget now queues its Keychain delete on gq after this save, so a late forget still wins
+                        var saved = c; saved.refresh = refresh
+                        guard saveGoogleCreds(saved) else { glog("sign in: keychain save failed"); respond(200, "Buddy couldn't finish the sign-in. See Buddy's bubble."); finish("I couldn't save the token to your Keychain."); return }
+                        g.access = access; g.accessUntil = Date().addingTimeInterval(Double(exp) - 60)
+                        glog("sign in: ok")
+                        respond(200, "🐾 Buddy is connected to Google Tasks. You can close this tab.")
+                        DispatchQueue.main.async {
+                            guard g.attempts.current(me) else { return }
+                            g.signedIn = true; g.hasClient = true; g.checked = true; g.epoch += 1; self.fetchGoogle()
                             finish("Connected to Google Tasks ✓ Today's tasks show in your to-do list.")
                         }
                     }
                 }
             }
         }
-        l.start(queue: lq)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 300) { if g.listener === l { glog("sign in: timed out"); finish("The Google sign-in timed out. Try again when you're ready.") } }
+        g.server = server
+        server.start(onReady: { port in
+            redirect = "http://127.0.0.1:\(port)"
+            glog("sign in: listening")
+            DispatchQueue.main.async {
+                guard g.attempts.current(me) else { return }
+                NSWorkspace.shared.open(googleAuthURL(clientId: c.clientId, redirect: redirect, challenge: pkceChallenge(verifier), state: state))
+                self.say("Finish signing in to Google in your browser 🌐", .calm, seconds: 20, kind: .ambient)
+            }
+        }, onFail: { finish("The sign-in stopped. Try again?") })
+        DispatchQueue.main.asyncAfter(deadline: .now() + 300) { if g.attempts.current(me) { glog("sign in: timed out"); finish("The Google sign-in timed out. Try again when you're ready.") } }
     }
 }

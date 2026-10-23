@@ -113,7 +113,7 @@ At most once an hour it may say *"You switched apps 140 times in the last hour. 
 
 ## Google Tasks (off by default)
 
-Buddy can show your **Google Tasks due today** in the Personal tab's to-do list, with a small **G** mark. Tick one and it is marked done in Google. *☾ tomorrow* hides it in Buddy until tomorrow and does not change Google. Between 10:00 and 12:00 Buddy tells you once how many Google tasks you have today.
+Buddy can show your **Google Tasks due today** in the Personal tab's to-do list, with a small **G** mark. Tick one and it is marked done in Google. *☾ tomorrow* hides it in Buddy until tomorrow, then keeps it on the list until you tick it. It does not change Google. Between 10:00 and 12:00 Buddy tells you once how many Google tasks you have today.
 
 Buddy makes no Google call until you sign in. You use your own Google OAuth client, so nothing secret is in this repo. It takes about 5 minutes, once:
 
@@ -124,7 +124,7 @@ Buddy makes no Google call until you sign in. You use your own Google OAuth clie
 5. Under *Clients*, make a client of type **Desktop app**. Copy its client ID and client secret.
 6. Right-click Buddy → *Personal* → **Connect Google Tasks…**, and paste the ID, then the secret. Your browser opens Google's sign-in. Google says *"Google hasn't verified this app"*: it is your own app, so click *Advanced → Go to Buddy*.
 
-The client and the sign-in token stay in your login Keychain (item *Buddy Google Tasks*). Like Claude Code's own login, a program that runs as you can read it without a prompt; the token only reaches your Google Tasks. Buddy reads your task lists every 10 minutes while you're at the Mac. *Personal → Sign out of Google Tasks* revokes the token at Google and deletes the Keychain item. If something goes wrong, `/tmp/buddy.google.log` says what Buddy did (events and HTTP codes only, never a token or a task).
+The client and the sign-in token stay in your login Keychain (item *Buddy Google Tasks*). Like Claude Code's own login, a program that runs as you can read it without a prompt; the token only reaches your Google Tasks. Buddy reads your task lists every 10 minutes while you're at the Mac. *Personal → Sign out of Google Tasks* revokes the token at Google and deletes the Keychain item. If something goes wrong, `~/Library/Logs/Buddy/google.log` says what Buddy did (events and error codes only, never a token, a task or an id). Only you can read it.
 
 ## What it asks permission for
 
