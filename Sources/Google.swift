@@ -196,6 +196,14 @@ final class SignInAttempts {
     func release(_ id: Int) -> Bool { lock.lock(); defer { lock.unlock() }; let ok = saving == id; if ok { saving = 0 }; return ok }
 }
 
+/// A token Buddy won't keep (the sign-in ended, or the save failed): give it back to Google. If that fails, Buddy can't sign
+/// out of it later, so say where to remove it by hand.
+func revokeUnkept(_ refresh: String, _ why: String, say: @escaping (String) -> Void) {
+    let code = Google.shared.post("https://oauth2.googleapis.com/revoke", ["token": refresh]).1
+    glog("sign in: revoke \(why): HTTP \(code)")
+    if code != 200 { DispatchQueue.main.async { say("Google may still list Buddy as connected. Remove it at myaccount.google.com/permissions.") } }
+}
+
 /// What to do with Google's answer to the sign-in code. nil = no network.
 enum SignInStep: Equatable { case stale; case save(access: String, expiresIn: Int, refresh: String); case fail(log: String, text: String, forgetClient: Bool) }
 func signInStep(_ r: TokenReply?, current: Bool) -> SignInStep {
@@ -370,7 +378,7 @@ final class Google {
             page = nil
             repeat {
                 var c = URLComponents(string: base + "/lists/\(pathPart(l))/tasks")!
-                c.queryItems = [.init(name: "dueMin", value: w.min), .init(name: "dueMax", value: w.max), .init(name: "showCompleted", value: "false"),
+                c.queryItems = [.init(name: "dueMin", value: w.min), .init(name: "dueMax", value: w.max), .init(name: "showCompleted", value: "false"), .init(name: "showAssigned", value: "true"),
                                 .init(name: "maxResults", value: "100")] + (page.map { [.init(name: "pageToken", value: $0)] } ?? [])
                 switch api("GET", c.url!, what: "tasks") {
                 case .success(let d): let p = parseGoogleTasks(d, list: l); all += p.tasks; page = p.next
@@ -557,7 +565,7 @@ extension Model {
                     let reply = d.map { parseTokenReply($0, status: status) }
                     switch signInStep(reply, current: g.attempts.current(me)) {
                     case .stale:   // ended while Google answered: give back what it gave, so no grant is left that Buddy can't sign out of
-                        if case .ok(_, _, let r?)? = reply { glog("sign in: revoke after end: HTTP \(g.post("https://oauth2.googleapis.com/revoke", ["token": r]).1)") }
+                        if case .ok(_, _, let r?)? = reply { revokeUnkept(r, "after end") { self.say($0, .calm, seconds: 15, kind: .ambient) } }
                         stale()
                     case let .fail(log, text, forgetClient):
                         glog("sign in: " + log)
@@ -566,14 +574,14 @@ extension Model {
                     case let .save(access, exp, refresh):
                         // claim: from here the timeout or a new sign-in can't strand a half-done save; forget still wins, because
                         // it queues its Keychain delete on gq after this save and clears the claim (release then says no)
-                        guard g.attempts.claim(me) else { glog("sign in: revoke after end: HTTP \(g.post("https://oauth2.googleapis.com/revoke", ["token": refresh]).1)"); stale(); return }
+                        guard g.attempts.claim(me) else { revokeUnkept(refresh, "after end") { self.say($0, .calm, seconds: 15, kind: .ambient) }; stale(); return }
                         var saved = c; saved.refresh = refresh
                         guard saveGoogleCreds(saved) else {
                             _ = g.attempts.release(me); glog("sign in: keychain save failed")
                             // Buddy can't sign out of a token it couldn't keep: give it back to Google now
-                            let rv = g.post("https://oauth2.googleapis.com/revoke", ["token": refresh]).1; glog("sign in: revoke after failed save: HTTP \(rv)")
+                            revokeUnkept(refresh, "after failed save") { self.say($0, .calm, seconds: 15, kind: .ambient) }
                             respond(200, "Buddy couldn't finish the sign-in. See Buddy's bubble.")
-                            DispatchQueue.main.async { mine?.cancel(); if g.server === mine { g.server = nil }; self.say("I couldn't save the token to your Keychain." + (rv == 200 ? "" : " Remove Buddy at myaccount.google.com/permissions."), .calm, seconds: 15, kind: .ambient) }
+                            DispatchQueue.main.async { mine?.cancel(); if g.server === mine { g.server = nil }; self.say("I couldn't save the token to your Keychain.", .calm, seconds: 15, kind: .ambient) }
                             return
                         }
                         g.access = access; g.accessUntil = Date().addingTimeInterval(Double(exp) - 60)
