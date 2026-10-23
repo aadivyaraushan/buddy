@@ -15,6 +15,9 @@ step "self-test (logic, notifications, stats, walking rules, privacy)"
 step "hook test (beat.py)"
 python3 test_beat.py
 
+step "logs live in ~/Library/Logs/Buddy, not /tmp (another program can make a file there first)"
+if git grep -nE "/tmp/(buddy|beat)\.[a-z]+" -- Sources install.sh beat.py phone.py buddy-cli README.md CONTRIBUTING.md .github; then echo "✗ a log path in /tmp above"; exit 1; fi
+
 step "phone server (phone.py): hooks → events the phone app receives"
 python3 test_phone.py
 

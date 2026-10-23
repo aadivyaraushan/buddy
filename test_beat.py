@@ -6,16 +6,17 @@ T = tempfile.mkdtemp()
 os.environ['BUDDY_SESSIONS'] = os.path.join(T, 'sessions')
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORK = os.path.join(T, 'myrepo'); os.makedirs(WORK)
+ERR = os.path.expanduser('~/Library/Logs/Buddy/beat.err')
 
 def hook(**d):
     subprocess.run(['python3', os.path.join(HERE, 'beat.py')], input=json.dumps(d), text=True, check=True)
-    assert not os.path.exists('/tmp/beat.err') or os.path.getsize('/tmp/beat.err') == err0, open('/tmp/beat.err').read()[-500:]
+    assert not os.path.exists(ERR) or os.path.getsize(ERR) == err0, open(ERR).read()[-500:]
 
 def session(sid):
     p = os.path.join(os.environ['BUDDY_SESSIONS'], sid + '.json')
     return json.load(open(p)) if os.path.exists(p) else None
 
-err0 = os.path.getsize('/tmp/beat.err') if os.path.exists('/tmp/beat.err') else 0
+err0 = os.path.getsize(ERR) if os.path.exists(ERR) else 0
 
 # Claude Code
 hook(session_id='c1', hook_event_name='UserPromptSubmit', cwd=WORK, prompt='fix the login test')
@@ -89,4 +90,12 @@ install('add'); claude, codex = install('add')
 assert beats(claude) == 5 and beats(codex) == 6, (beats(claude), beats(codex))
 claude, codex = install('remove')
 assert claude == mine and beats(codex) == 0, claude
+# a crash is logged in ~/Library/Logs/Buddy/beat.err, only yours; a symlink there (planted to read it or to write
+# over another file) is refused, and the hook still exits quietly
+H = os.path.join(T, 'errhome'); L = os.path.join(H, 'Library/Logs/Buddy')
+def crash(): return subprocess.run(['python3', os.path.join(HERE, 'beat.py')], input='not json', text=True, env={**os.environ, 'HOME': H}, capture_output=True)
+r = crash(); assert r.returncode == 0 and 'JSONDecodeError' in open(os.path.join(L, 'beat.err')).read(), r.stderr
+assert os.stat(os.path.join(L, 'beat.err')).st_mode & 0o777 == 0o600 and os.stat(L).st_mode & 0o777 == 0o700
+os.remove(os.path.join(L, 'beat.err')); os.symlink(os.path.join(T, 'target'), os.path.join(L, 'beat.err'))
+r = crash(); assert r.returncode == 0 and not os.path.exists(os.path.join(T, 'target')), r.stderr
 print('hook test ok')

@@ -378,11 +378,7 @@ final class Model: ObservableObject {
             history.insert(b, at: 0)
             if history.count > 60 { history.removeLast() }
         }
-        if let h = FileHandle(forWritingAtPath: "/tmp/buddy.said.log") ?? { FileManager.default.createFile(atPath: "/tmp/buddy.said.log", contents: nil); return FileHandle(forWritingAtPath: "/tmp/buddy.said.log") }() {
-            h.seekToEndOfFile()
-            h.write("\(ISO8601DateFormatter().string(from: Date())) [\(b.kind)] \(b.text.replacingOccurrences(of: "\n", with: " / "))\n".data(using: .utf8)!)
-            h.closeFile()
-        }
+        appendPrivateLog(saidLogPath, "\(ISO8601DateFormatter().string(from: Date())) [\(b.kind)] \(b.text.replacingOccurrences(of: "\n", with: " / "))\n")
         self.pose = pose
         if b.kind == .event && (b.tone == .upset || b.tone == .waiting) { shake += 1 }
         if b.tone == .happy { celebrate += 1 }

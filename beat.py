@@ -383,7 +383,25 @@ def install_hooks(mode, beat):
         json.dump(d, open(path, 'w'), indent=2)
         print(('hooks added: ' if mode == 'add' else 'hooks removed: ') + path)
 
-import traceback
+import stat, traceback
+
+def log_error(text):
+    """Adds text to ~/Library/Logs/Buddy/beat.err, a file only you can read. Not /tmp: another program could make the file
+    there first. Refuses a symlink, anything but a plain file, a file with other links, or one you don't own (as Buddy's openPrivateLog)."""
+    d = os.path.expanduser('~/Library/Logs/Buddy')
+    try:
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        ds = os.lstat(d)
+        if not stat.S_ISDIR(ds.st_mode) or ds.st_uid != os.getuid(): return
+        if ds.st_mode & 0o077: os.chmod(d, 0o700)
+        fd = os.open(os.path.join(d, 'beat.err'), os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o600)
+        with os.fdopen(fd, 'a') as f:
+            st = os.fstat(fd)
+            if stat.S_ISREG(st.st_mode) and st.st_uid == os.getuid() and st.st_nlink == 1:
+                if st.st_mode & 0o077: os.fchmod(fd, 0o600)
+                f.write(text)
+    except OSError:
+        pass   # no log is better than a hook that fails
 if sys.argv[1:2] == ['--speak']:
     speak(sys.argv[2])
     sys.exit()
@@ -393,4 +411,4 @@ if sys.argv[1:2] == ['--hooks']:   # install.sh: beat.py --hooks add|remove
 try:
     main()
 except Exception:
-    open('/tmp/beat.err','a').write(traceback.format_exc())
+    log_error(traceback.format_exc())

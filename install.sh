@@ -68,6 +68,8 @@ hooks add
 # 4. start at login
 stop_old
 mkdir -p "$HOME/Library/LaunchAgents"
+LOGS="$HOME/Library/Logs/Buddy"   # not /tmp: another program could make the log there first and read it
+mkdir -p "$LOGS" && chmod 700 "$LOGS"
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -79,7 +81,7 @@ cat > "$PLIST" <<EOF
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>ProcessType</key><string>Interactive</string>
-  <key>StandardErrorPath</key><string>/tmp/buddy.err.log</string>
+  <key>StandardErrorPath</key><string>$LOGS/err.log</string>
 </dict>
 </plist>
 EOF
@@ -101,8 +103,8 @@ if python3 -c "import json,sys; sys.exit(0 if json.load(open('$HOME/.config/budd
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>30</integer>
-  <key>StandardErrorPath</key><string>/tmp/buddy.phone.log</string>
-  <key>StandardOutPath</key><string>/tmp/buddy.phone.log</string>
+  <key>StandardErrorPath</key><string>$LOGS/phone.log</string>
+  <key>StandardOutPath</key><string>$LOGS/phone.log</string>
 </dict>
 </plist>
 EOF

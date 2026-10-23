@@ -168,7 +168,7 @@ Talking back to your sessions comes later. For now, answer them in Claude's own 
 
 ## Updates
 
-When a new version of Buddy is released, Buddy says so once, and right-click shows **⬆️ Update Buddy to v1.x**. Click it and Buddy updates itself the same way you would by hand (`git pull` in its folder, then `./install.sh`) and is back in about a minute. If the folder has your own changes, nothing is overwritten: Buddy keeps running and tells you the update didn't finish (details in `/tmp/buddy.update.log`).
+When a new version of Buddy is released, Buddy says so once, and right-click shows **⬆️ Update Buddy to v1.x**. Click it and Buddy updates itself the same way you would by hand (`git pull` in its folder, then `./install.sh`) and is back in about a minute. If the folder has your own changes, nothing is overwritten: Buddy keeps running and tells you the update didn't finish (details in `~/Library/Logs/Buddy/update.log`).
 
 Buddy checks a minute after it starts and every 6 hours, with one read-only request to GitHub (`git ls-remote`). `"updates": false` in `~/.config/buddy.json` turns the check off.
 

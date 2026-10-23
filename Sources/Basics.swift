@@ -233,9 +233,7 @@ func run(_ exe: String, _ args: [String]) -> Data? {
     p.waitUntilExit()
     if p.terminationStatus != 0 && exe == ghPath {   // GitHub failures leave a trace, so a blank tile can be explained later
         let line = "\(ISO8601DateFormatter().string(from: Date())) gh \(args.prefix(2).joined(separator: " ")): \(String(data: why, encoding: .utf8)?.prefix(200) ?? "")\n"
-        if let h = FileHandle(forWritingAtPath: "/tmp/buddy.gh.log") ?? { FileManager.default.createFile(atPath: "/tmp/buddy.gh.log", contents: nil); return FileHandle(forWritingAtPath: "/tmp/buddy.gh.log") }() {
-            h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); h.closeFile()
-        }
+        appendPrivateLog(ghLogPath, line)
     }
     return p.terminationStatus == 0 ? data : nil
 }
