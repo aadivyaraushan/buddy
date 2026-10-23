@@ -204,6 +204,9 @@ func revokeUnkept(_ refresh: String, _ why: String) -> Bool {
     return code == 200
 }
 let stillConnected = "Google may still list Buddy as connected. Remove it at myaccount.google.com/permissions."
+/// Revoking failed: remember to tell you, and say it at the first moment you can read it (privacy off), from googleTick.
+/// Kept in UserDefaults, so a restart, a call or screen-sharing can't lose it.
+func noteStillConnected() { UserDefaults.standard.set(true, forKey: "bit.gStillConnected") }
 
 /// What to do with Google's answer to the sign-in code. nil = no network.
 enum SignInStep: Equatable { case stale; case save(access: String, expiresIn: Int, refresh: String); case fail(log: String, text: String, forgetClient: Bool) }
@@ -410,6 +413,10 @@ extension Model {
 
     /// From dayCare (every 30 s while you're at the Mac). First time: read the Keychain off the main thread. Then fetch every 10 minutes.
     func googleTick(_ now: Date) {
+        if !privacy, UserDefaults.standard.bool(forKey: "bit.gStillConnected") {   // a token Buddy couldn't revoke: tell you, once you can read it
+            UserDefaults.standard.removeObject(forKey: "bit.gStillConnected")
+            say(stillConnected, .waiting, seconds: 30)   // an event: shown even on a call, and kept in the inbox
+        }
         let g = Google.shared, today = isoDay.string(from: now)
         if !g.checked {
             g.checked = true
@@ -512,7 +519,7 @@ extension Model {
             glog("sign out: keychain item \(gone ? "deleted" : "NOT deleted")")
             DispatchQueue.main.async {
                 var text = gone ? "Signed out of Google Tasks. I deleted the token from your Keychain." : "Signed out, but I couldn't delete the Keychain item \"\(googleKeychain)\". Delete it in Keychain Access."
-                if !revoked { text += "\nI couldn't reach Google to revoke it: remove Buddy at myaccount.google.com/permissions." }
+                if !revoked { noteStillConnected() }   // said on its own, when you can read it
                 self.say(text, .calm, seconds: 20, kind: .ambient)
             }
         }
@@ -566,7 +573,7 @@ extension Model {
                     let reply = d.map { parseTokenReply($0, status: status) }
                     switch signInStep(reply, current: g.attempts.current(me)) {
                     case .stale:   // ended while Google answered: give back what it gave, so no grant is left that Buddy can't sign out of
-                        if case .ok(_, _, let r?)? = reply, !revokeUnkept(r, "after end") { DispatchQueue.main.async { self.say(stillConnected, .waiting, seconds: 20) } }   // an event: kept in the inbox
+                        if case .ok(_, _, let r?)? = reply, !revokeUnkept(r, "after end") { noteStillConnected() }
                         stale()
                     case let .fail(log, text, forgetClient):
                         glog("sign in: " + log)
@@ -575,14 +582,14 @@ extension Model {
                     case let .save(access, exp, refresh):
                         // claim: from here the timeout or a new sign-in can't strand a half-done save; forget still wins, because
                         // it queues its Keychain delete on gq after this save and clears the claim (release then says no)
-                        guard g.attempts.claim(me) else { if !revokeUnkept(refresh, "after end") { DispatchQueue.main.async { self.say(stillConnected, .waiting, seconds: 20) } }; stale(); return }
+                        guard g.attempts.claim(me) else { if !revokeUnkept(refresh, "after end") { noteStillConnected() }; stale(); return }
                         var saved = c; saved.refresh = refresh
                         guard saveGoogleCreds(saved) else {
                             _ = g.attempts.release(me); glog("sign in: keychain save failed")
                             // Buddy can't sign out of a token it couldn't keep: give it back to Google now
-                            let back = revokeUnkept(refresh, "after failed save")
+                            if !revokeUnkept(refresh, "after failed save") { noteStillConnected() }
                             respond(200, "Buddy couldn't finish the sign-in. See Buddy's bubble.")
-                            DispatchQueue.main.async { mine?.cancel(); if g.server === mine { g.server = nil }; self.say("I couldn't save the token to your Keychain." + (back ? "" : "\n" + stillConnected), back ? .calm : .waiting, seconds: 20) }   // one message, an event: kept in the inbox
+                            DispatchQueue.main.async { mine?.cancel(); if g.server === mine { g.server = nil }; self.say("I couldn't save the token to your Keychain.", .calm, seconds: 15, kind: .ambient) }
                             return
                         }
                         g.access = access; g.accessUntil = Date().addingTimeInterval(Double(exp) - 60)
