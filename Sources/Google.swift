@@ -301,6 +301,7 @@ final class Google {
     var raw: [GTask] = []                   // the last fetch, before today's filter
     var doneAt: [String: Date] = [:]        // ticked in Buddy: hidden until a fetch that started after Google said OK
     var lastFetch = Date.distantPast, fetchedDay = "", busy = false
+    var freshDay = ""   // the day of the last fetch that succeeded: the morning bubble waits for today's list
     var access: String?, accessUntil = Date.distantPast   // gq only
     var server: CallbackServer?             // the sign-in listener, while a sign-in runs
     let attempts = SignInAttempts()
@@ -421,7 +422,7 @@ extension Model {
                 guard g.epoch == epoch else { return }   // signed out (or in again) meanwhile
                 switch r {
                 case .success(let t):
-                    g.raw = t
+                    g.raw = t; g.freshDay = today
                     let redated = googleRedate(self.googleSnoozed, tasks: t)
                     if redated != self.googleSnoozed { self.googleSnoozed = redated }
                     // put-off tasks this fetch asked for but Google no longer has open: forget them (ones put off since, keep)
@@ -478,7 +479,8 @@ extension Model {
     /// Once a day, 10:00–12:00, if Google has tasks for today. Privacy mode keeps it for later rather than spending it.
     func googleNudge(_ now: Date) -> Bool {
         let h = Calendar.current.component(.hour, from: now)
-        guard !privacy, (10..<12).contains(h), let text = googleMorningText(google), Day.once("gtasks") else { return false }
+        // today's list, not yesterday's left over from a Mac that slept: wait until a fetch has succeeded today
+        guard !privacy, (10..<12).contains(h), Google.shared.freshDay == isoDay.string(from: now), let text = googleMorningText(google), Day.once("gtasks") else { return false }
         say(text, .calm, seconds: 30, kind: .ambient) { self.bubble = nil; self.tab = "personal"; self.showCard = true; self.onExpandChange?() }
         return true
     }
@@ -567,8 +569,11 @@ extension Model {
                         guard g.attempts.claim(me) else { glog("sign in: revoke after end: HTTP \(g.post("https://oauth2.googleapis.com/revoke", ["token": refresh]).1)"); stale(); return }
                         var saved = c; saved.refresh = refresh
                         guard saveGoogleCreds(saved) else {
-                            _ = g.attempts.release(me); glog("sign in: keychain save failed"); respond(200, "Buddy couldn't finish the sign-in. See Buddy's bubble.")
-                            DispatchQueue.main.async { mine?.cancel(); if g.server === mine { g.server = nil }; self.say("I couldn't save the token to your Keychain.", .calm, seconds: 12, kind: .ambient) }
+                            _ = g.attempts.release(me); glog("sign in: keychain save failed")
+                            // Buddy can't sign out of a token it couldn't keep: give it back to Google now
+                            let rv = g.post("https://oauth2.googleapis.com/revoke", ["token": refresh]).1; glog("sign in: revoke after failed save: HTTP \(rv)")
+                            respond(200, "Buddy couldn't finish the sign-in. See Buddy's bubble.")
+                            DispatchQueue.main.async { mine?.cancel(); if g.server === mine { g.server = nil }; self.say("I couldn't save the token to your Keychain." + (rv == 200 ? "" : " Remove Buddy at myaccount.google.com/permissions."), .calm, seconds: 15, kind: .ambient) }
                             return
                         }
                         g.access = access; g.accessUntil = Date().addingTimeInterval(Double(exp) - 60)
