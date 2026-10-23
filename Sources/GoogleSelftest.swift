@@ -116,6 +116,8 @@ func googleSelftest() {
     _ = at.begin(); precondition(at.release(third))                               // a new sign-in meanwhile: the save still counts
     let fourth = at.begin(); precondition(at.claim(fourth)); at.end(all: true); precondition(!at.release(fourth))   // forget while saving
     let fifth = at.begin(); at.end(); precondition(!at.claim(fifth))             // ended before saving: nothing is saved
+    let rd = googleRedate(["m": GSnooze(until: "2026-10-19", due: "2026-10-18")], tasks: [GTask(id: "m", list: "L", title: "x", status: "needsAction", due: "2026-10-10T00:00:00.000Z", hidden: false, deleted: false)])
+    precondition(rd["m"]?.due == "2026-10-10" && dueWindow(today: "2026-11-11", snoozed: rd).min == "2026-10-09T00:00:00.000Z")   // moved earlier: still reached weeks later
     precondition(callbackError("access_denied") == "access_denied" && callbackError("Private task 123") == "other" && callbackError("") == "other")
     let okReply = TokenReply.ok(access: "ya29.a", expiresIn: 3599, refresh: "1//r")
     precondition(signInStep(okReply, current: false) == .stale && signInStep(nil, current: false) == .stale)

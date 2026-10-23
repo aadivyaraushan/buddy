@@ -84,6 +84,12 @@ struct GSnooze: Codable, Equatable { var until, due: String }
 func googleSnooze(_ s: [String: GSnooze], id: String, due: String, today: String) -> [String: GSnooze] {
     var out = s; out[id] = GSnooze(until: shiftDay(today, 1), due: s[id]?.due ?? due); return out
 }
+/// Put-off tasks whose due day you moved earlier in Google: keep the earlier day, so the query keeps reaching them. Selftested.
+func googleRedate(_ s: [String: GSnooze], tasks: [GTask]) -> [String: GSnooze] {
+    var out = s
+    for t in tasks { if let old = s[t.id], let d = t.due.flatMap(googleDay), d < old.due { out[t.id]?.due = d } }
+    return out
+}
 /// Forget put-off tasks that Google no longer sends as open: done or deleted, there or here.
 func googlePrune(_ s: [String: GSnooze], open: Set<String>) -> [String: GSnooze] { s.filter { open.contains($0.key) } }
 
@@ -416,6 +422,8 @@ extension Model {
                 switch r {
                 case .success(let t):
                     g.raw = t
+                    let redated = googleRedate(self.googleSnoozed, tasks: t)
+                    if redated != self.googleSnoozed { self.googleSnoozed = redated }
                     // put-off tasks this fetch asked for but Google no longer has open: forget them (ones put off since, keep)
                     let gone = Set(snoozed.keys).subtracting(googlePrune(snoozed, open: Set(t.filter { $0.status == "needsAction" && !$0.deleted }.map(\.id))).keys)
                     if !gone.isEmpty { self.googleSnoozed = self.googleSnoozed.filter { !gone.contains($0.key) } }
@@ -558,12 +566,16 @@ extension Model {
                         // it queues its Keychain delete on gq after this save and clears the claim (release then says no)
                         guard g.attempts.claim(me) else { glog("sign in: revoke after end: HTTP \(g.post("https://oauth2.googleapis.com/revoke", ["token": refresh]).1)"); stale(); return }
                         var saved = c; saved.refresh = refresh
-                        guard saveGoogleCreds(saved) else { _ = g.attempts.release(me); glog("sign in: keychain save failed"); respond(200, "Buddy couldn't finish the sign-in. See Buddy's bubble."); DispatchQueue.main.async { self.say("I couldn't save the token to your Keychain.", .calm, seconds: 12, kind: .ambient) }; return }
+                        guard saveGoogleCreds(saved) else {
+                            _ = g.attempts.release(me); glog("sign in: keychain save failed"); respond(200, "Buddy couldn't finish the sign-in. See Buddy's bubble.")
+                            DispatchQueue.main.async { mine?.cancel(); if g.server === mine { g.server = nil }; self.say("I couldn't save the token to your Keychain.", .calm, seconds: 12, kind: .ambient) }
+                            return
+                        }
                         g.access = access; g.accessUntil = Date().addingTimeInterval(Double(exp) - 60)
                         glog("sign in: ok")
                         respond(200, "🐾 Buddy is connected to Google Tasks. You can close this tab.")
                         DispatchQueue.main.async {
-                            guard g.attempts.release(me) else { g.access = nil; return }   // forgotten while saving: the forget deletes what was saved
+                            guard g.attempts.release(me) else { return }   // forgotten while saving: the queued sign-out deletes what was saved and clears access
                             mine?.cancel(); if g.server === mine { g.server = nil }
                             g.signedIn = true; g.hasClient = true; g.checked = true; g.epoch += 1; self.fetchGoogle()
                             self.say("Connected to Google Tasks ✓ Today's tasks show in your to-do list.", .calm, seconds: 12, kind: .ambient)
