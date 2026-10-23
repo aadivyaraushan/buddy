@@ -59,7 +59,9 @@ func googleDay(_ due: String) -> String? {
 /// dueMin / dueMax for tasks.list: a day either side of today, and back to the day before the oldest task you put off, so Google
 /// still sends it. (Google doesn't say whether dueMin counts, so a day of margin either way.)
 func dueWindow(today: String, snoozed: [String: GSnooze] = [:]) -> (min: String, max: String) {
-    let from = ([today] + snoozed.values.map(\.due)).min().map { shiftDay($0, -1) }!
+    // with put-off tasks, also 30 days back: one whose due day you moved earlier in Google must still come back, or it's pruned
+    // as done. ponytail: moved more than 30 days back, it's still lost; a per-task lookup would close that
+    let from = ([today] + snoozed.values.map(\.due) + (snoozed.isEmpty ? [] : [shiftDay(today, -30)])).min().map { shiftDay($0, -1) }!
     return (from + "T00:00:00.000Z", shiftDay(today, 1) + "T00:00:00.000Z")
 }
 
@@ -147,6 +149,13 @@ func openPrivateLog(_ path: String) -> FileHandle? {
 /// An error code from Google or the browser, fit for the log: short letters, digits, "_" and spaces, else "other".
 func logSafe(_ s: String) -> String { s.range(of: "^[A-Za-z0-9_ ]{1,40}$", options: .regularExpression) != nil ? s : "other" }
 
+/// The `error` a browser redirect carries, for the log: only the codes OAuth defines (RFC 6749 §4.1.2.1), else "other".
+/// Anyone can open the callback URL, so its text is never written as is.
+func callbackError(_ s: String) -> String {
+    ["access_denied", "invalid_request", "unauthorized_client", "unsupported_response_type", "invalid_scope", "server_error",
+     "temporarily_unavailable", "admin_policy_enforced", "org_internal", "disallowed_useragent"].contains(s) ? s : "other"
+}
+
 /// What Buddy did with Google, for when something goes wrong: fixed events and error codes only, never a token, a task or an id.
 func glog(_ s: String) {
     openPrivateLog(googleLogPath)?.write("\(ISO8601DateFormatter().string(from: Date())) \(s)\n".data(using: .utf8)!)
@@ -169,11 +178,16 @@ func readRequestLine(_ buf: Data, limit: Int = 8192) -> LineRead {
 /// Each sign-in gets a number. Forget, a new sign-in or the timeout ends it; an ended sign-in must not save or sign you in.
 /// Read from any thread.
 final class SignInAttempts {
-    private let lock = NSLock(); private var n = 0, live = 0
+    private let lock = NSLock(); private var n = 0, live = 0, saving = 0
     func begin() -> Int { lock.lock(); defer { lock.unlock() }; n += 1; live = n; return n }
     func current(_ id: Int) -> Bool { lock.lock(); defer { lock.unlock() }; return id == live }
-    /// End the running sign-in; with an id, only if that one is still running.
-    func end(ifCurrent id: Int? = nil) { lock.lock(); defer { lock.unlock() }; if id == nil || id == live { live = 0 } }
+    /// End the running sign-in; with an id, only if that one is still running. A sign-in already saving is left to finish:
+    /// it got past every check, so a new sign-in or the timeout no longer stops it (forget does, with `all`).
+    func end(ifCurrent id: Int? = nil, all: Bool = false) { lock.lock(); defer { lock.unlock() }; if id == nil || id == live { live = 0 }; if all { saving = 0 } }
+    /// Take the sign-in from running to saving, in one step, so nothing can end it between the check and the Keychain write.
+    func claim(_ id: Int) -> Bool { lock.lock(); defer { lock.unlock() }; guard id == live else { return false }; live = 0; saving = id; return true }
+    /// After the save: true if no forget came in meanwhile, so it's fine to show Buddy as signed in.
+    func release(_ id: Int) -> Bool { lock.lock(); defer { lock.unlock() }; let ok = saving == id; if ok { saving = 0 }; return ok }
 }
 
 /// What to do with Google's answer to the sign-in code. nil = no network.
@@ -211,7 +225,7 @@ final class CallbackServer {
         l.stateUpdateHandler = { [weak self] s in
             switch s {
             case .ready: if let p = l.port?.rawValue { onReady(p) }
-            case .failed: glog("sign in: listener failed"); self?.stop(); onFail()
+            case .failed: glog("sign in: listener failed"); self?.stop(force: true); onFail()
             default: break
             }
         }
@@ -220,11 +234,12 @@ final class CallbackServer {
         l.start(queue: q)
     }
 
-    func cancel() { q.async { self.stop() } }
+    /// `force` (forget, a new sign-in): also close a connection still being answered. Otherwise its page is sent first.
+    func cancel(force: Bool = false) { q.async { self.stop(force: force) } }
 
-    private func stop() {   // q
+    private func stop(force: Bool) {   // q
         done = true; listener?.cancel(); listener = nil
-        for (k, c) in open where !answering.contains(k) { c.cancel() }   // one being answered closes after its page is sent
+        for (k, c) in open where force || !answering.contains(k) { c.cancel() }   // one being answered closes after its page is sent
     }
 
     private func accept(_ c: NWConnection) {   // q
@@ -235,7 +250,7 @@ final class CallbackServer {
         }
         c.start(queue: q)
         q.asyncAfter(deadline: .now() + deadline) { [weak self] in if let self, self.open[k] != nil, !self.answering.contains(k) { c.cancel() } }
-        q.asyncAfter(deadline: .now() + 60) { [weak self] in if self?.open[k] != nil { c.cancel() } }   // even one being answered
+        q.asyncAfter(deadline: .now() + 60) { c.cancel() }   // even one being answered; holds c, so it fires after the server is gone too
         read(c, Data())
     }
 
@@ -464,7 +479,7 @@ extension Model {
     /// Ends a sign-in still running, so finishing it in the browser afterwards saves nothing.
     func signOutGoogle() {
         let g = Google.shared
-        g.attempts.end(); g.server?.cancel(); g.server = nil
+        g.attempts.end(all: true); g.server?.cancel(force: true); g.server = nil
         g.signedIn = false; g.hasClient = false; g.epoch += 1; g.raw = []; g.doneAt = [:]; google = []
         g.gq.async {
             g.access = nil
@@ -486,7 +501,8 @@ extension Model {
 
     /// Ask for your OAuth client (once), then sign in in your browser. The Keychain is read on gq: a locked one must not freeze Buddy.
     func connectGoogle() {
-        Google.shared.gq.async { let saved = loadGoogleCreds(); DispatchQueue.main.async { self.connectGoogle(saved) } }
+        let g = Google.shared, epoch = g.epoch   // forget (sign out) bumps epoch: a Connect still reading the Keychain then stops
+        g.gq.async { let saved = loadGoogleCreds(); DispatchQueue.main.async { guard g.epoch == epoch else { glog("connect: dropped after forget"); return }; self.connectGoogle(saved) } }
     }
     private func connectGoogle(_ saved: GoogleCreds?) {
         var c = saved ?? GoogleCreds(clientId: "", clientSecret: "", refresh: "")
@@ -504,10 +520,11 @@ extension Model {
     /// A new sign-in, forget, or the 5-minute timeout ends this one: it then saves nothing and says nothing.
     func signInGoogle(_ c: GoogleCreds) {
         let g = Google.shared
-        g.attempts.end(); g.server?.cancel(); g.server = nil
+        g.attempts.end(); g.server?.cancel(force: true); g.server = nil
         guard let verifier = randomVerifier() else { glog("sign in: no random bytes"); say("I couldn't start the sign-in. Try again?", .calm, seconds: 10, kind: .ambient); return }
         let me = g.attempts.begin(), state = UUID().uuidString
         var redirect = ""   // set when the listener is ready, before any request can arrive
+        weak var mine: CallbackServer?   // this sign-in's listener: a newer sign-in may own g.server by the time this one saves
         /// End this sign-in (if it is still the one running) and say how it went.
         func finish(_ text: String) {
             DispatchQueue.main.async {
@@ -519,7 +536,7 @@ extension Model {
         let server = CallbackServer(state: state) { result, respond in
             switch result {
             case .bad: break   // the server answers those itself
-            case .denied(let e): glog("sign in: denied (\(logSafe(e)))"); respond(200, "Sign-in cancelled. You can close this tab."); finish("Google sign-in cancelled.")
+            case .denied(let e): glog("sign in: denied (\(callbackError(e)))"); respond(200, "Sign-in cancelled. You can close this tab."); finish("Google sign-in cancelled.")
             case .code(let code):
                 glog("sign in: got a code")
                 g.gq.async {
@@ -537,22 +554,25 @@ extension Model {
                         if forgetClient { deleteGoogleCreds(); DispatchQueue.main.async { g.hasClient = false } }
                         respond(200, "Buddy couldn't finish the sign-in. See Buddy's bubble."); finish(text)
                     case let .save(access, exp, refresh):
-                        // forget now queues its Keychain delete on gq after this save, so a late forget still wins
+                        // claim: from here the timeout or a new sign-in can't strand a half-done save; forget still wins, because
+                        // it queues its Keychain delete on gq after this save and clears the claim (release then says no)
+                        guard g.attempts.claim(me) else { glog("sign in: revoke after end: HTTP \(g.post("https://oauth2.googleapis.com/revoke", ["token": refresh]).1)"); stale(); return }
                         var saved = c; saved.refresh = refresh
-                        guard saveGoogleCreds(saved) else { glog("sign in: keychain save failed"); respond(200, "Buddy couldn't finish the sign-in. See Buddy's bubble."); finish("I couldn't save the token to your Keychain."); return }
+                        guard saveGoogleCreds(saved) else { _ = g.attempts.release(me); glog("sign in: keychain save failed"); respond(200, "Buddy couldn't finish the sign-in. See Buddy's bubble."); DispatchQueue.main.async { self.say("I couldn't save the token to your Keychain.", .calm, seconds: 12, kind: .ambient) }; return }
                         g.access = access; g.accessUntil = Date().addingTimeInterval(Double(exp) - 60)
                         glog("sign in: ok")
                         respond(200, "🐾 Buddy is connected to Google Tasks. You can close this tab.")
                         DispatchQueue.main.async {
-                            guard g.attempts.current(me) else { return }
+                            guard g.attempts.release(me) else { g.access = nil; return }   // forgotten while saving: the forget deletes what was saved
+                            mine?.cancel(); if g.server === mine { g.server = nil }
                             g.signedIn = true; g.hasClient = true; g.checked = true; g.epoch += 1; self.fetchGoogle()
-                            finish("Connected to Google Tasks ✓ Today's tasks show in your to-do list.")
+                            self.say("Connected to Google Tasks ✓ Today's tasks show in your to-do list.", .calm, seconds: 12, kind: .ambient)
                         }
                     }
                 }
             }
         }
-        g.server = server
+        g.server = server; mine = server
         server.start(onReady: { port in
             redirect = "http://127.0.0.1:\(port)"
             glog("sign in: listening")

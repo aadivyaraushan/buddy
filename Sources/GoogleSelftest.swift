@@ -73,8 +73,8 @@ func googleSelftest() {
     let s2 = googleSnooze(s1, id: "a", due: "2026-10-18", today: "2026-10-19")                                     // put off again
     precondition(s2["a"] == GSnooze(until: "2026-10-20", due: "2026-10-18") && googleToday(p.tasks, today: "2026-10-19", snoozed: s2).map(\.text) == ["Tomorrow's"])
     // the query reaches back to the oldest put-off task, so Google still sends it
-    precondition(dueWindow(today: "2026-10-25", snoozed: s1) == ("2026-10-17T00:00:00.000Z", "2026-10-26T00:00:00.000Z"))   // a day of margin
-    precondition(dueWindow(today: "2026-10-18", snoozed: s1).min == "2026-10-17T00:00:00.000Z")
+    precondition(dueWindow(today: "2026-10-25", snoozed: s1) == ("2026-09-24T00:00:00.000Z", "2026-10-26T00:00:00.000Z"))   // 30 days back, a day of margin
+    precondition(dueWindow(today: "2026-10-18", snoozed: s1).min == "2026-09-17T00:00:00.000Z")
     // a put-off task that Google no longer sends as open (done or deleted elsewhere) is forgotten
     precondition(googlePrune(s1, open: ["b", "c"]).isEmpty && googlePrune(s1, open: ["a"]) == s1)
     // a put-off task that is done in Google does not come back
@@ -111,6 +111,12 @@ func googleSelftest() {
     let second = at.begin(); precondition(!at.current(first) && at.current(second))
     at.end(ifCurrent: first); precondition(at.current(second))   // an old attempt's timeout leaves the new one alone
     at.end(); precondition(!at.current(second))                  // forget ends whatever is running
+    // a sign-in that got to saving: the timeout or a new sign-in can't stop it halfway; forget can
+    let third = at.begin(); precondition(at.claim(third) && !at.current(third))   // claimed: the timeout's check now sees it ended
+    _ = at.begin(); precondition(at.release(third))                               // a new sign-in meanwhile: the save still counts
+    let fourth = at.begin(); precondition(at.claim(fourth)); at.end(all: true); precondition(!at.release(fourth))   // forget while saving
+    let fifth = at.begin(); at.end(); precondition(!at.claim(fifth))             // ended before saving: nothing is saved
+    precondition(callbackError("access_denied") == "access_denied" && callbackError("Private task 123") == "other" && callbackError("") == "other")
     let okReply = TokenReply.ok(access: "ya29.a", expiresIn: 3599, refresh: "1//r")
     precondition(signInStep(okReply, current: false) == .stale && signInStep(nil, current: false) == .stale)
     precondition(signInStep(okReply, current: true) == .save(access: "ya29.a", expiresIn: 3599, refresh: "1//r"))
